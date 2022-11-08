@@ -81,7 +81,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex)
 
 int pthread_mutex_destroy(pthread_mutex_t *mutex)
 {
-	NOTSELF(pthread_mutex_destroy, mutex);
+//	NOTSELF(pthread_mutex_destroy, mutex);
 	return 0;
 }
 

@@ -26,6 +26,7 @@ extern void thread_ready(thread_t *thread);
 extern void thread_ready_head(thread_t *thread);
 extern thread_t *thread_create(thread_fn_t fn, void *arg);
 extern thread_t *thread_create_with_buf(thread_fn_t fn, void **buf, size_t len);
+extern thread_t *thread_create_nostack(thread_fn_t fn, void *arg);
 extern void __set_uthread_specific(thread_t *th, uint64_t val);
 extern uint64_t __get_uthread_specific(thread_t *th);
 extern void thread_set_fsbase(thread_t *th, uint64_t fsbase);

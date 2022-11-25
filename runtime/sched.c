@@ -797,6 +797,31 @@ void thread_yield(void)
 	enter_schedule(curth);
 }
 
+static __always_inline thread_t *__thread_create_nostack(void)
+{
+	struct thread *th;
+
+	preempt_disable();
+	th = tcache_alloc(perthread_ptr(thread_pt));
+	if (unlikely(!th)) {
+		preempt_enable();
+		return NULL;
+	}
+
+	th->last_cpu = myk()->curr_cpu;
+	preempt_enable();
+
+	th->stack = NULL;
+	th->main_thread = false;
+	th->has_fsbase = false;
+	th->thread_ready = false;
+	th->thread_running = false;
+	th->tlsvar = 0;
+
+	return th;
+}
+
+
 static __always_inline thread_t *__thread_create(void)
 {
 	struct thread *th;
@@ -825,6 +850,26 @@ static __always_inline thread_t *__thread_create(void)
 	th->thread_running = false;
 	th->tlsvar = 0;
 
+	return th;
+}
+
+/**
+ * thread_create_nostack - creates a new thread with no stack
+ * @fn: a function pointer to the starting method of the thread
+ * @arg: an argument passed to @fn
+ *
+ * Returns 0 if successful, otherwise -ENOMEM if out of memory.
+ */
+thread_t *thread_create_nostack(thread_fn_t fn, void *arg)
+{
+	thread_t *th = __thread_create_nostack();
+	if (unlikely(!th))
+		return NULL;
+
+	th->tf.rdi = (uint64_t)arg;
+	th->tf.rbp = (uint64_t)0; /* just in case base pointers are enabled */
+	th->tf.rip = (uint64_t)fn;
+	gc_register_thread(th);
 	return th;
 }
 
@@ -921,7 +966,8 @@ static void thread_finish_exit(void)
 	struct thread *th = thread_self();
 
 	gc_remove_thread(th);
-	stack_free(th->stack);
+	if (th->stack)
+		stack_free(th->stack);
 	tcache_free(perthread_ptr(thread_pt), th);
 	perthread_store(__self, NULL);
 

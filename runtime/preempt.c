@@ -14,6 +14,8 @@
 #include <runtime/thread.h>
 #include <runtime/preempt.h>
 
+#include <base/syscall.h>
+
 #include "defs.h"
 
 #define __user
@@ -161,6 +163,29 @@ int preempt_init_thread(void)
 	return 0;
 }
 
+#define SA_RESTORER 0x04000000
+
+/* copied from glibc sysdeps/unix/sysv/linux/kernel_sigaction.h */
+struct kernel_sigaction {
+	__sighandler_t k_sa_handler;
+	unsigned long sa_flags;
+	void (*sa_restorer) (void);
+	sigset_t sa_mask;
+};
+
+
+/* use our own sa_restorer instead of glibc's */
+static int _sigaction(int sig, const struct sigaction *act)
+{
+	struct kernel_sigaction kact;
+
+	kact.k_sa_handler = act->sa_handler;
+	memcpy(&kact.sa_mask, &act->sa_mask, sizeof(sigset_t));
+	kact.sa_flags = act->sa_flags | SA_RESTORER;
+	kact.sa_restorer = &syscall_rt_sigreturn;
+	return syscall(__NR_rt_sigaction, sig, &kact, NULL, 8);
+}
+
 /**
  * preempt_init - global initializer for preemption support
  *
@@ -180,15 +205,15 @@ int preempt_init(void)
 	}
 
 	act.sa_sigaction = handle_sigusr1;
-	if (sigaction(SIGUSR1, &act, NULL) == -1) {
+	if (_sigaction(SIGUSR1, &act) < 0) {
 		log_err("couldn't register signal handler");
-		return -errno;
+		return -1;
 	}
 
 	act.sa_sigaction = handle_sigusr2;
-	if (sigaction(SIGUSR2, &act, NULL) == -1) {
+	if (_sigaction(SIGUSR2, &act) < 0) {
 		log_err("couldn't register signal handler");
-		return -errno;
+		return -1;
 	}
 
 	ret = ioctl(ksched_fd, KSCHED_IOC_UINTR_SETUP_USER, uintr_asm_entry);

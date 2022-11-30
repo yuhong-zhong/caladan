@@ -50,5 +50,11 @@ syscall_mprotect:
 	syscall
 	ret
 
+.align 16
+.globl syscall_exit
+syscall_exit:
+	movl    $__NR_exit_group, %eax
+	syscall
+
 .globl base_syscall_end
 base_syscall_end:

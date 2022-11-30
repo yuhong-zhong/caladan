@@ -6,6 +6,7 @@
 
 #include <base/init.h>
 #include <base/log.h>
+#include <base/syscall.h>
 #include <base/thread.h>
 
 #include "init_internal.h"
@@ -16,7 +17,7 @@ void __weak init_shutdown(int status)
 {
 	log_info("init: shutting down -> %s",
 		 status == EXIT_SUCCESS ? "SUCCESS" : "FAILURE");
-	exit(status);
+	syscall_exit(status);
 }
 
 /* we initialize these early subsystems by hand */

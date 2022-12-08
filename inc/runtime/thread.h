@@ -26,9 +26,13 @@ extern void thread_ready(thread_t *thread);
 extern void thread_ready_head(thread_t *thread);
 extern thread_t *thread_create(thread_fn_t fn, void *arg);
 extern thread_t *thread_create_with_buf(thread_fn_t fn, void **buf, size_t len);
+extern void __set_uthread_specific(thread_t *th, uint64_t val);
+extern uint64_t __get_uthread_specific(thread_t *th);
+extern void thread_set_fsbase(thread_t *th, uint64_t fsbase);
 
 DECLARE_PERTHREAD(thread_t *, __self);
 DECLARE_PERTHREAD(unsigned int, kthread_idx);
+DECLARE_PERTHREAD(uint64_t, runtime_fsbase);
 
 static inline unsigned int get_current_affinity(void)
 {
@@ -43,9 +47,15 @@ inline thread_t *thread_self(void)
 	return perthread_read_stable(__self);
 }
 
+static inline uint64_t get_uthread_specific(void)
+{
+    return __get_uthread_specific(thread_self());
+}
 
-extern uint64_t get_uthread_specific(void);
-extern void set_uthread_specific(uint64_t val);
+static inline void set_uthread_specific(uint64_t val)
+{
+    __set_uthread_specific(thread_self(), val);
+}
 
 
 /*

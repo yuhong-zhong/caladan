@@ -72,6 +72,7 @@ struct thread_tf {
 	uint64_t rax;	/* holds return value */
 	uint64_t rip;	/* instruction pointer */
 	uint64_t rsp;	/* stack pointer */
+	uint64_t fsbase; /* holds %fs */
 };
 
 #define ARG0(tf)        ((tf)->rdi)
@@ -102,6 +103,7 @@ struct thread {
 	struct list_node	link;
 	struct stack		*stack;
 	unsigned int		main_thread:1;
+	unsigned int		has_fsbase:1;
 	unsigned int		thread_ready;
 	unsigned int		thread_running;
 	unsigned int		last_cpu;
@@ -151,10 +153,10 @@ DECLARE_PERTHREAD(struct tcache_perthread, stack_pt);
  */
 static inline struct stack *stack_alloc(void)
 {
-	void *s = tcache_alloc(perthread_ptr(stack_pt));
-	if (unlikely(!s))
+	void *p = tcache_alloc(perthread_ptr(stack_pt));
+	if (unlikely(!p))
 		return NULL;
-	return container_of(s, struct stack, usable);
+	return container_of((uintptr_t (*)[STACK_PTR_SIZE])p, struct stack, usable);
 }
 
 /**
@@ -269,7 +271,7 @@ static inline bool hardware_q_pending(struct hardware_q *q)
 	tail = ACCESS_ONCE(*q->consumer_idx);
 	idx = tail & (q->nr_descriptors - 1);
 	parity = !!(tail & q->nr_descriptors);
-	addr = q->descriptor_table +
+	addr = (unsigned char *)q->descriptor_table +
 		     (idx << q->descriptor_log_size) + q->parity_byte_offset;
 	hd_parity = !!(ACCESS_ONCE(*addr) & q->parity_bit_mask);
 

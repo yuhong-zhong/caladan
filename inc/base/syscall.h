@@ -22,3 +22,4 @@ extern int syscall_ioctl(int fd, unsigned long int request, void *arg);
 extern int syscall_madvise(void *addr, size_t length, int advice);
 extern int syscall_mprotect(void *addr, size_t len, int prot);
 extern void syscall_exit(int status) __noreturn;
+extern ssize_t syscall_write(int fd, const void *buf, size_t count);

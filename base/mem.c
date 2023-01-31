@@ -88,10 +88,12 @@ __mem_map_anom(void *base, size_t len, size_t pgsize,
 	if ((intptr_t)addr < 0)
 		return MAP_FAILED;
 
+  /*
 	BUILD_ASSERT(sizeof(unsigned long) * 8 >= NNUMA);
 	if (syscall_mbind(addr, len, numa_policy, mask ? mask : NULL,
 		  mask ? NNUMA + 1 : 0, MPOL_MF_STRICT | MPOL_MF_MOVE))
 		goto fail;
+  */
 
 	if (cfg_transparent_hugepages_enabled && (pgsize > PGSIZE_4KB)) {
 	  if (madvise(addr, len, MADV_HUGEPAGE))

@@ -39,82 +39,9 @@
 #define RUNTIME_WATCHDOG_US		50
 #define RUNTIME_RX_BATCH_SIZE		32
 
-
-/*
- * Trap frame support
- */
-
-/*
- * See the "System V Application Binary Interface" for a full explation of
- * calling and argument passing conventions.
- */
-
-struct thread_tf {
-	/* argument registers, can be clobbered by callee */
-	uint64_t rdi; /* first argument */
-	uint64_t rsi;
-	uint64_t rdx;
-	uint64_t rcx;
-	uint64_t r8;
-	uint64_t r9;
-	uint64_t r10;
-	uint64_t r11;
-
-	/* callee-saved registers */
-	uint64_t rbx;
-	uint64_t rbp;
-	uint64_t r12;
-	uint64_t r13;
-	uint64_t r14;
-	uint64_t r15;
-
-	/* special-purpose registers */
-	uint64_t rax;	/* holds return value */
-	uint64_t rip;	/* instruction pointer */
-	uint64_t rsp;	/* stack pointer */
-	uint64_t fsbase; /* holds %fs */
-};
-
-#define ARG0(tf)        ((tf)->rdi)
-#define ARG1(tf)        ((tf)->rsi)
-#define ARG2(tf)        ((tf)->rdx)
-#define ARG3(tf)        ((tf)->rcx)
-#define ARG4(tf)        ((tf)->r8)
-#define ARG5(tf)        ((tf)->r9)
-
-/* format of the trap frame set up by uintr_asm_entry */
-struct uintr_frame {
-	struct thread_tf general_regs;
-	unsigned long pad;
-	unsigned long uirrv;
-	unsigned long rip;
-	unsigned long rflags;
-	unsigned long rsp;
-};
-
 /*
  * Thread support
  */
-
-struct stack;
-
-struct thread {
-	struct thread_tf	tf;
-	struct list_node	link;
-	struct stack		*stack;
-	unsigned int		main_thread:1;
-	unsigned int		has_fsbase:1;
-	unsigned int		thread_ready;
-	unsigned int		thread_running;
-	unsigned int		last_cpu;
-	uint64_t		run_start_tsc;
-	uint64_t		ready_tsc;
-	uint64_t		tlsvar;
-#ifdef GC
-	struct list_node	gc_link;
-	unsigned int		onk;
-#endif
-};
 
 typedef void (*runtime_fn_t)(void);
 

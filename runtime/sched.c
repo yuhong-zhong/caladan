@@ -44,16 +44,6 @@ static DEFINE_PERTHREAD(uint64_t, last_tsc);
  */
 thread_t *thread_self(void);
 
-uint64_t __get_uthread_specific(thread_t *th)
-{
-	return th->tlsvar;
-}
-
-void __set_uthread_specific(thread_t *th, uint64_t val)
-{
-	th->tlsvar = val;
-}
-
 void thread_set_fsbase(thread_t *th, uint64_t fsbase)
 {
 	th->tf.fsbase = fsbase;

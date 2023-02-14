@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <base/list.h>
 #include <base/thread.h>
 #include <base/types.h>
 #include <base/compiler.h>
@@ -27,8 +28,6 @@ extern void thread_ready_head(thread_t *thread);
 extern thread_t *thread_create(thread_fn_t fn, void *arg);
 extern thread_t *thread_create_with_buf(thread_fn_t fn, void **buf, size_t len);
 extern thread_t *thread_create_nostack(thread_fn_t fn, void *arg);
-extern void __set_uthread_specific(thread_t *th, uint64_t val);
-extern uint64_t __get_uthread_specific(thread_t *th);
 extern void thread_set_fsbase(thread_t *th, uint64_t fsbase);
 
 DECLARE_PERTHREAD(thread_t *, __self);
@@ -48,14 +47,101 @@ inline thread_t *thread_self(void)
 	return perthread_read_stable(__self);
 }
 
+/*
+ * Trap frame support
+ */
+
+/*
+ * See the "System V Application Binary Interface" for a full explation of
+ * calling and argument passing conventions.
+ */
+
+struct thread_tf {
+    /* argument registers, can be clobbered by callee */
+    uint64_t rdi; /* first argument */
+    uint64_t rsi;
+    uint64_t rdx;
+    uint64_t rcx;
+    uint64_t r8;
+    uint64_t r9;
+    uint64_t r10;
+    uint64_t r11;
+
+    /* callee-saved registers */
+    uint64_t rbx;
+    uint64_t rbp;
+    uint64_t r12;
+    uint64_t r13;
+    uint64_t r14;
+    uint64_t r15;
+
+    /* special-purpose registers */
+    uint64_t rax;   /* holds return value */
+    uint64_t rip;   /* instruction pointer */
+    uint64_t rsp;   /* stack pointer */
+    uint64_t fsbase; /* holds %fs */
+};
+
+#define ARG0(tf)        ((tf)->rdi)
+#define ARG1(tf)        ((tf)->rsi)
+#define ARG2(tf)        ((tf)->rdx)
+#define ARG3(tf)        ((tf)->rcx)
+#define ARG4(tf)        ((tf)->r8)
+#define ARG5(tf)        ((tf)->r9)
+
+/* format of the trap frame set up by uintr_asm_entry */
+struct uintr_frame {
+	struct thread_tf general_regs;
+	unsigned long pad;
+	unsigned long uirrv;
+	unsigned long rip;
+	unsigned long rflags;
+	unsigned long rsp;
+};
+
+/*
+ * Thread support
+ */
+
+struct stack;
+
+struct thread {
+    struct thread_tf    tf;
+    struct list_node    link;
+    struct stack        *stack;
+    unsigned int        main_thread:1;
+    unsigned int        has_fsbase:1;
+    unsigned int        thread_ready;
+    unsigned int        thread_running;
+    unsigned int        last_cpu;
+    uint64_t        run_start_tsc;
+    uint64_t        ready_tsc;
+    uint64_t        tlsvar;
+#ifdef GC
+    struct list_node    gc_link;
+    unsigned int        onk;
+#endif
+};
+
+
+static inline uint64_t __get_uthread_specific(thread_t *th)
+{
+    return th->tlsvar;
+}
+
+static inline void __set_uthread_specific(thread_t *th, uint64_t val)
+{
+    th->tlsvar = val;
+}
+
 static inline uint64_t get_uthread_specific(void)
 {
-    return __get_uthread_specific(thread_self());
+    return thread_self()->tlsvar;
 }
 
 static inline void set_uthread_specific(uint64_t val)
 {
-    __set_uthread_specific(thread_self(), val);
+    thread_self()->tlsvar = val;
 }
 
 

@@ -120,6 +120,7 @@ struct thread {
      // Trapframe used by junction to stash registers on syscall entry
     struct thread_tf	junction_tf;
     void 		*xsave_area;
+    unsigned long    junction_tstate_buf[8];
 #ifdef GC
     struct list_node    gc_link;
     unsigned int        onk;

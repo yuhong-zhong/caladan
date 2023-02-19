@@ -807,6 +807,7 @@ static __always_inline thread_t *__thread_create_nostack(void)
 	th->thread_ready = false;
 	th->thread_running = false;
 	th->tlsvar = 0;
+	th->xsave_area = NULL;
 
 	return th;
 }
@@ -839,6 +840,7 @@ static __always_inline thread_t *__thread_create(void)
 	th->thread_ready = false;
 	th->thread_running = false;
 	th->tlsvar = 0;
+	th->xsave_area = NULL;
 
 	return th;
 }

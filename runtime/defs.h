@@ -449,6 +449,7 @@ extern unsigned int cfg_request_hardware_queues;
 extern uint64_t cfg_ht_punish_us;
 extern uint64_t cfg_qdelay_us;
 extern uint64_t cfg_quantum_us;
+extern bool use_sigaltstack;
 
 extern void kthread_park(void);
 extern void kthread_park_now(void);

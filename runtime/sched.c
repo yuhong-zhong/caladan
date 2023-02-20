@@ -798,6 +798,10 @@ static __always_inline thread_t *__thread_create_nostack(void)
 		return NULL;
 	}
 
+	 th->syscallstack = stack_alloc();
+        BUG_ON(!th->syscallstack);
+
+
 	th->last_cpu = myk()->curr_cpu;
 	preempt_enable();
 
@@ -835,6 +839,11 @@ static __always_inline thread_t *__thread_create(void)
 	preempt_enable();
 
 	th->stack = s;
+	th->syscallstack = stack_alloc();
+
+	BUG_ON(!th->syscallstack);
+
+
 	th->main_thread = false;
 	th->has_fsbase = false;
 	th->thread_ready = false;
@@ -960,6 +969,8 @@ static void thread_finish_exit(void)
 	gc_remove_thread(th);
 	if (th->stack)
 		stack_free(th->stack);
+	if (th->syscallstack)
+		stack_free(th->syscallstack);
 	tcache_free(perthread_ptr(thread_pt), th);
 	perthread_store(__self, NULL);
 

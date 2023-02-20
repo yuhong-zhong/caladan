@@ -58,10 +58,10 @@ static const struct init_entry global_init_handlers[] = {
 /* per-kthread subsystem initialization */
 static const struct init_entry thread_init_handlers[] = {
 	/* runtime core */
+	THREAD_INITIALIZER(stack),
 	THREAD_INITIALIZER(preempt),
 	THREAD_INITIALIZER(kthread),
 	THREAD_INITIALIZER(ioqueues),
-	THREAD_INITIALIZER(stack),
 	THREAD_INITIALIZER(sched),
 	THREAD_INITIALIZER(timer),
 	THREAD_INITIALIZER(smalloc),

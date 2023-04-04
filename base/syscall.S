@@ -7,12 +7,21 @@
 base_syscall_start:
 
 .align 16
-.globl syscall_write
-.type syscall_write, @function
-syscall_write:
-	movl	$__NR_write, %eax
+.globl syscall_pwritev2
+.type syscall_pwritev2, @function
+syscall_pwritev2:
+	movl	$__NR_pwritev2, %eax
+	movq    %rcx, %r10
 	syscall
 	ret
+
+.align 16
+.globl syscall_writev
+.type syscall_writev, @function
+syscall_writev:
+        movl    $__NR_writev, %eax
+        syscall
+        ret
 
 .align 16
 .globl syscall_mmap

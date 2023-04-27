@@ -962,16 +962,21 @@ int thread_spawn_main(thread_fn_t fn, void *arg)
 	return 0;
 }
 
-static void thread_finish_exit(void)
+void thread_free(thread_t *th)
 {
-	struct thread *th = thread_self();
-
 	gc_remove_thread(th);
 	if (th->stack)
 		stack_free(th->stack);
 	if (th->syscallstack)
 		stack_free(th->syscallstack);
 	tcache_free(perthread_ptr(thread_pt), th);
+}
+
+static void thread_finish_exit(void)
+{
+	struct thread *th = thread_self();
+
+	thread_free(th);
 	perthread_store(__self, NULL);
 
 	/* if the main thread dies, kill the whole program */

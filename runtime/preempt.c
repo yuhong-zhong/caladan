@@ -4,6 +4,7 @@
 
 #include <signal.h>
 #include <string.h>
+#include <ucontext.h>
 
 #include <asm/prctl.h>
 #include <immintrin.h>
@@ -43,6 +44,8 @@ static __nofp inline void set_preempt_needed(void)
 /* handles preemptive cede signals from the iokernel */
 static void handle_sigusr1(int s, siginfo_t *si, void *c)
 {
+	ucontext_t *ctx = (ucontext_t *)c;
+
 	STAT(PREEMPTIONS)++;
 
 	/* resume execution if preemption is disabled */
@@ -53,6 +56,9 @@ static void handle_sigusr1(int s, siginfo_t *si, void *c)
 
 	WARN_ON_ONCE(!preempt_cede_needed(myk()));
 
+	// prevent sigreturn from updating altstack
+	ctx->uc_stack.ss_flags = 4;
+
 	preempt_disable();
 	thread_cede();
 }
@@ -60,6 +66,8 @@ static void handle_sigusr1(int s, siginfo_t *si, void *c)
 /* handles preemptive yield signals from the iokernel */
 static void handle_sigusr2(int s, siginfo_t *si, void *c)
 {
+	ucontext_t *ctx = (ucontext_t *)c;
+
 	STAT(PREEMPTIONS)++;
 
 	/* resume execution if preemption is disabled */
@@ -71,6 +79,9 @@ static void handle_sigusr2(int s, siginfo_t *si, void *c)
 	/* check if yield request is still relevant */
 	if (!preempt_yield_needed(myk()))
 		return;
+
+	// prevent sigreturn from updating altstack
+	ctx->uc_stack.ss_flags = 4;
 
 	thread_yield();
 }
@@ -159,25 +170,8 @@ void preempt(void)
 
 int preempt_init_thread(void)
 {
-	stack_t ss;
-	struct stack *stk;
-
 	perthread_store(preempt_cnt, PREEMPT_NOT_PENDING);
 	perthread_store(uintr_stack, (void *)REDZONE_SIZE);
-
-	if (!use_sigaltstack)
-		return 0;
-
-	stk = stack_alloc();
-	if (!stk)
-		return -ENOMEM;
-
-	ss.ss_sp = &stk->usable[0];
-	ss.ss_size = RUNTIME_STACK_SIZE;
-	ss.ss_flags = 0;
-	if (sigaltstack(&ss, NULL) == -1)
-		return -errno;
-
 	return 0;
 }
 
@@ -192,9 +186,6 @@ int preempt_init(void)
 	int ret;
 	struct sigaction act;
 	struct cpuid_info regs;
-
-	if (use_sigaltstack)
-		return 0;
 
 	act.sa_flags = SA_SIGINFO | SA_NODEFER;
 

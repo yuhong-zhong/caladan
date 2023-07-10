@@ -3,6 +3,7 @@
  */
 
 #include <sched.h>
+#include <signal.h>
 #include <immintrin.h>
 
 #include <base/stddef.h>
@@ -21,7 +22,7 @@
 /* the current running thread, or NULL if there isn't one */
 DEFINE_PERTHREAD(thread_t *, __self);
 /* a pointer to the top of the per-kthread (TLS) runtime stack */
-static DEFINE_PERTHREAD(void *, runtime_stack);
+DEFINE_PERTHREAD(void *, runtime_stack);
 DEFINE_PERTHREAD(uint64_t, runtime_fsbase);
 /* Flag to prevent watchdog from running */
 bool disable_watchdog;
@@ -723,7 +724,26 @@ void thread_ready_head(thread_t *th)
 	putk();
 }
 
-static void thread_finish_cede(void)
+void thread_finish_yield(void)
+{
+	thread_t *curth = thread_self();
+	struct kthread *k = myk();
+
+	assert_preempt_disabled();
+
+	spin_lock(&k->lock);
+
+	/* check for softirqs */
+	softirq_run_locked(k);
+
+	curth->thread_ready = false;
+	curth->last_cpu = k->curr_cpu;
+	thread_ready_locked(curth);
+
+	schedule();
+}
+
+void thread_finish_cede(void)
 {
 	struct kthread *k = myk();
 	thread_t *myth = thread_self();
@@ -787,36 +807,6 @@ void thread_yield(void)
 	enter_schedule(curth);
 }
 
-static __always_inline thread_t *__thread_create_nostack(void)
-{
-	struct thread *th;
-
-	preempt_disable();
-	th = tcache_alloc(perthread_ptr(thread_pt));
-	if (unlikely(!th)) {
-		preempt_enable();
-		return NULL;
-	}
-
-	 th->syscallstack = stack_alloc();
-        BUG_ON(!th->syscallstack);
-
-
-	th->last_cpu = myk()->curr_cpu;
-	preempt_enable();
-
-	th->stack = NULL;
-	th->main_thread = false;
-	th->has_fsbase = false;
-	th->thread_ready = false;
-	th->thread_running = false;
-	th->tlsvar = 0;
-	th->xsave_area = NULL;
-
-	return th;
-}
-
-
 static __always_inline thread_t *__thread_create(void)
 {
 	struct thread *th;
@@ -839,38 +829,12 @@ static __always_inline thread_t *__thread_create(void)
 	preempt_enable();
 
 	th->stack = s;
-	th->syscallstack = stack_alloc();
-
-	BUG_ON(!th->syscallstack);
-
-
 	th->main_thread = false;
 	th->has_fsbase = false;
 	th->thread_ready = false;
 	th->thread_running = false;
 	th->tlsvar = 0;
-	th->xsave_area = NULL;
 
-	return th;
-}
-
-/**
- * thread_create_nostack - creates a new thread with no stack
- * @fn: a function pointer to the starting method of the thread
- * @arg: an argument passed to @fn
- *
- * Returns 0 if successful, otherwise -ENOMEM if out of memory.
- */
-thread_t *thread_create_nostack(thread_fn_t fn, void *arg)
-{
-	thread_t *th = __thread_create_nostack();
-	if (unlikely(!th))
-		return NULL;
-
-	th->tf.rdi = (uint64_t)arg;
-	th->tf.rbp = (uint64_t)0; /* just in case base pointers are enabled */
-	th->tf.rip = (uint64_t)fn;
-	gc_register_thread(th);
 	return th;
 }
 
@@ -967,8 +931,6 @@ void thread_free(thread_t *th)
 	gc_remove_thread(th);
 	if (th->stack)
 		stack_free(th->stack);
-	if (th->syscallstack)
-		stack_free(th->syscallstack);
 	tcache_free(perthread_ptr(thread_pt), th);
 }
 
@@ -1044,6 +1006,7 @@ static void runtime_top_of_stack(void)
  */
 int sched_init_thread(void)
 {
+	stack_t ss;
 	struct stack *s;
 
 	tcache_init_perthread(thread_tcache, perthread_ptr(thread_pt));
@@ -1054,6 +1017,12 @@ int sched_init_thread(void)
 
 	perthread_store(runtime_stack, (void *)stack_init_to_rsp(s, runtime_top_of_stack));
 	perthread_store(runtime_fsbase, _readfsbase_u64());
+
+	ss.ss_sp = &s->usable[0];
+	ss.ss_size = RUNTIME_STACK_SIZE;
+	ss.ss_flags = 0;
+	if (sigaltstack(&ss, NULL) == -1)
+		return -errno;
 
 	return 0;
 }

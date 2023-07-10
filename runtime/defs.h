@@ -70,6 +70,7 @@ struct stack {
 };
 
 DECLARE_PERTHREAD(struct tcache_perthread, stack_pt);
+DECLARE_PERTHREAD(void *, runtime_stack);
 
 /**
  * stack_alloc - allocates a stack
@@ -449,7 +450,6 @@ extern unsigned int cfg_request_hardware_queues;
 extern uint64_t cfg_ht_punish_us;
 extern uint64_t cfg_qdelay_us;
 extern uint64_t cfg_quantum_us;
-extern bool use_sigaltstack;
 
 extern void kthread_park(void);
 extern void kthread_park_now(void);

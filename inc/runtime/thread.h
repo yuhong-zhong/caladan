@@ -109,7 +109,6 @@ struct stack;
 struct thread {
     struct thread_tf    tf;
     struct list_node    link;
-    struct stack        *syscallstack;
     struct stack        *stack;
     unsigned int        main_thread:1;
     unsigned int        has_fsbase:1;
@@ -121,8 +120,7 @@ struct thread {
     uint64_t        tlsvar;
      // Trapframe used by junction to stash registers on syscall entry
     struct thread_tf	junction_tf;
-    void 		*xsave_area;
-    unsigned long    junction_tstate_buf[8];
+    unsigned long    junction_tstate_buf[24];
 #ifdef GC
     struct list_node    gc_link;
     unsigned int        onk;

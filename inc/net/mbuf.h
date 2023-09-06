@@ -23,18 +23,18 @@ struct mbuf {
 	struct mbuf	*next;	   /* the next mbuf in the mbufq */
 	unsigned char	*head;	   /* start of the buffer */
 	unsigned char	*data;	   /* current position within the buffer */
-	unsigned int	head_len;  /* length of the entire buffer from @head */
-	unsigned int	len;	   /* length of the data */
-	unsigned int	csum_type; /* type of checksum */
-	unsigned int	csum;	   /* 16-bit one's complement */
+	unsigned short	head_len;  /* length of the entire buffer from @head */
+	unsigned short	len;	   /* length of the data */
+	unsigned short	transport_off;	/* the offset of the transport header */
+	unsigned short	network_off;	/* the offset of the network header */
 
 	union {
-		unsigned int	txflags;  /* TX offload flags */
-		unsigned int	rss_hash; /* RSS 5-tuple hash from HW */
+		uint8_t	txflags;  /* TX offload flags */
+		uint8_t	csum_type; /* type of checksum */
 	};
 
-	unsigned short	network_off;	/* the offset of the network header */
-	unsigned short	transport_off;	/* the offset of the transport header */
+	uint8_t		flags;	    /* TCP: which flags were set? */
+	atomic_t	ref;	    /* a reference count for the mbuf */
 	unsigned long   release_data;	/* data for the release method */
 	void		(*release)(struct mbuf *m); /* frees the mbuf */
 
@@ -43,8 +43,6 @@ struct mbuf {
 	uint64_t	timestamp;  /* the time the packet was last sent */
 	uint32_t	seg_seq;    /* the first seg number */
 	uint32_t	seg_end;    /* the last seg number (noninclusive) */
-	uint8_t		flags;	    /* which flags were set? */
-	atomic_t	ref;	    /* a reference count for the mbuf */
 };
 
 static inline unsigned char *__mbuf_pull(struct mbuf *m, unsigned int len)

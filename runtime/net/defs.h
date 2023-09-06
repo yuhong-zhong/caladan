@@ -12,6 +12,9 @@
 
 #include "../defs.h"
 
+#define SMALL_BUF_SIZE 64
+#define MBUF_INL_DATA_SZ (2 * CACHE_LINE_SIZE)
+
 /*
  * Network Error Reporting Functions
  */
@@ -42,7 +45,20 @@ extern void net_rx_batch(struct mbuf **ms, unsigned int nr);
 
 extern int arp_lookup(uint32_t daddr, struct eth_addr *dhost_out,
 		      struct mbuf *m) __must_use_return;
+
+
 extern struct mbuf *net_tx_alloc_mbuf(void);
+extern struct mbuf *net_tx_alloc_mbuf_small(void);
+DECLARE_PERTHREAD(struct tcache_perthread, mbuf_pt);
+
+static inline struct mbuf *net_tx_alloc_mbuf_sz(size_t len)
+{
+	if (len <= SMALL_BUF_SIZE)
+		return net_tx_alloc_mbuf_small();
+
+	return net_tx_alloc_mbuf();
+}
+
 extern void net_tx_release_mbuf(struct mbuf *m);
 extern void net_tx_eth(struct mbuf *m, uint16_t proto,
 		       struct eth_addr dhost);

@@ -454,7 +454,7 @@ ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
 	}
 	spin_unlock_np(&c->outq_lock);
 
-	m = net_tx_alloc_mbuf();
+	m = net_tx_alloc_mbuf_sz(len);
 	if (unlikely(!m))
 		return -ENOBUFS;
 
@@ -764,7 +764,7 @@ ssize_t udp_send(const void *buf, size_t len,
 	if (raddr.ip == MAKE_IP_ADDR(127, 0, 0, 1))
 		raddr.ip = netcfg.addr;
 
-	m = net_tx_alloc_mbuf();
+	m = net_tx_alloc_mbuf_sz(len);
 	if (unlikely(!m))
 		return -ENOBUFS;
 

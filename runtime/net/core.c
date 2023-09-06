@@ -12,6 +12,7 @@
 #include <asm/chksum.h>
 #include <runtime/net.h>
 #include <runtime/smalloc.h>
+#include <net/tcp.h>
 
 #include "defs.h"
 
@@ -28,13 +29,29 @@ static struct mempool net_tx_buf_mp;
 static struct tcache *net_tx_buf_tcache;
 static DEFINE_PERTHREAD(struct tcache_perthread, net_tx_buf_pt);
 
+static struct mempool net_tx_buf_sm_mp;
+static struct tcache *net_tx_buf_sm_tcache;
+static DEFINE_PERTHREAD(struct tcache_perthread, net_tx_buf_sm_pt);
+
+/* slab allocator for mbuf structs */
+static struct slab mbuf_slab;
+static struct tcache *mbuf_tcache;
+DEFINE_PERTHREAD(struct tcache_perthread, mbuf_pt);
+
+static size_t tx_mbuf_headroom;
+static size_t tx_mbuf_sz;
+
 int net_init_mempool_threads(void)
 {
 	int i;
 
-	for (i = 0; i < maxks; i++)
+	for (i = 0; i < maxks; i++) {
 		tcache_init_perthread(net_tx_buf_tcache,
 			&perthread_get_remote(net_tx_buf_pt, i));
+
+		tcache_init_perthread(net_tx_buf_sm_tcache,
+			&perthread_get_remote(net_tx_buf_sm_pt, i));
+	}
 
 	return 0;
 }
@@ -42,16 +59,35 @@ int net_init_mempool_threads(void)
 int net_init_mempool(void)
 {
 	int ret;
+	size_t pool_sz = iok.tx_len / 2;
 
-	ret = mempool_create(&net_tx_buf_mp, iok.tx_buf, iok.tx_len, PGSIZE_2MB,
-			     align_up(net_get_mtu() + MBUF_HEAD_LEN + MBUF_DEFAULT_HEADROOM,
+	tx_mbuf_headroom = sizeof(struct eth_hdr) + sizeof(struct ip_hdr) + sizeof(struct tcp_hdr);
+	tx_mbuf_sz = net_get_mtu() + sizeof(struct eth_hdr);
+
+	if (!cfg_directpath_enabled()) {
+		tx_mbuf_sz += sizeof(struct tx_net_hdr);
+		tx_mbuf_headroom += sizeof(struct tx_net_hdr);
+	}
+
+	ret = mempool_create(&net_tx_buf_mp, iok.tx_buf, pool_sz, PGSIZE_2MB,
+			     align_up(tx_mbuf_sz + MBUF_HEAD_LEN,
 				      CACHE_LINE_SIZE * 2));
+	if (unlikely(ret))
+		return ret;
+
+	ret = mempool_create(&net_tx_buf_sm_mp, iok.tx_buf + pool_sz, pool_sz, PGSIZE_2MB,
+			     align_up(SMALL_BUF_SIZE + tx_mbuf_headroom, CACHE_LINE_SIZE * 2));
 	if (unlikely(ret))
 		return ret;
 
 	net_tx_buf_tcache = mempool_create_tcache(&net_tx_buf_mp,
 		"runtime_tx_bufs", TCACHE_DEFAULT_MAG_SIZE);
 	if (unlikely(!net_tx_buf_tcache))
+		return -ENOMEM;
+
+	net_tx_buf_sm_tcache = mempool_create_tcache(&net_tx_buf_sm_mp,
+		"runtime_tx_sm_bufs", TCACHE_DEFAULT_MAG_SIZE);
+	if (unlikely(!net_tx_buf_sm_tcache))
 		return -ENOMEM;
 
 	return 0;
@@ -323,8 +359,15 @@ static void iokernel_softirq(void *arg)
  */
 void net_tx_release_mbuf(struct mbuf *m)
 {
+	bool lg = mempool_member(&net_tx_buf_mp, m);
+
 	preempt_disable();
-	tcache_free(perthread_ptr(net_tx_buf_pt), m);
+	if (lg) {
+		tcache_free(perthread_ptr(net_tx_buf_pt), m);
+	} else {
+		tcache_free(perthread_ptr(net_tx_buf_sm_pt), m->head);
+		tcache_free(perthread_ptr(mbuf_pt), m);
+	}
 	preempt_enable();
 }
 
@@ -341,16 +384,45 @@ struct mbuf *net_tx_alloc_mbuf(void)
 	preempt_disable();
 	m = tcache_alloc(perthread_ptr(net_tx_buf_pt));
 	if (unlikely(!m)) {
-		preempt_enable();
 		log_warn_ratelimited("net: out of tx buffers");
+		preempt_enable();
 		return NULL;
 	}
+
 	preempt_enable();
 
 	buf = (unsigned char *)m + MBUF_HEAD_LEN;
-	mbuf_init(m, buf, net_get_mtu(), MBUF_DEFAULT_HEADROOM);
+	mbuf_init(m, buf, tx_mbuf_sz, tx_mbuf_headroom);
 	m->txflags = 0;
-	m->release_data = 0;
+	m->release = net_tx_release_mbuf;
+	return m;
+}
+
+struct mbuf *net_tx_alloc_mbuf_small(void)
+{
+	struct mbuf *m;
+	unsigned char *buf;
+
+	preempt_disable();
+	buf = tcache_alloc(perthread_ptr(net_tx_buf_sm_pt));
+	if (unlikely(!buf)) {
+		log_warn_ratelimited("net: out of tx buffers");
+		preempt_enable();
+		return NULL;
+	}
+
+	m = tcache_alloc(perthread_ptr(mbuf_pt));
+	if (unlikely(!m)) {
+		tcache_free(perthread_ptr(net_tx_buf_sm_pt), buf);
+		log_warn_ratelimited("net: out of mbufs");
+		preempt_enable();
+		return NULL;
+	}
+
+	preempt_enable();
+
+	mbuf_init(m, buf, SMALL_BUF_SIZE + tx_mbuf_headroom, tx_mbuf_headroom);
+	m->txflags = 0;
 	m->release = net_tx_release_mbuf;
 	return m;
 }
@@ -670,8 +742,12 @@ int net_init_thread(void)
 
 	k->iokernel_softirq = th;
 
-	if (!cfg_directpath_external())
+	tcache_init_perthread(mbuf_tcache, &perthread_get(mbuf_pt));
+
+	if (!cfg_directpath_external()) {
 		tcache_init_perthread(net_tx_buf_tcache, &perthread_get(net_tx_buf_pt));
+		tcache_init_perthread(net_tx_buf_sm_tcache, &perthread_get(net_tx_buf_sm_pt));
+	}
 
 	return 0;
 }
@@ -718,6 +794,18 @@ static struct net_driver_ops iokernel_ops = {
  */
 int net_init(void)
 {
+	size_t sz;
+	int ret;
+
+	sz = sizeof(struct mbuf) + MBUF_INL_DATA_SZ;
+	ret = slab_create(&mbuf_slab, "mbufs", sz, 0);
+	if (ret)
+		return ret;
+
+	mbuf_tcache = slab_create_tcache(&mbuf_slab, TCACHE_DEFAULT_MAG_SIZE);
+	if (!mbuf_tcache)
+		return -ENOMEM;
+
 	log_info("net: started network stack");
 	net_dump_config();
 

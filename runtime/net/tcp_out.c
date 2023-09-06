@@ -28,8 +28,8 @@ static uint16_t tcp_hdr_chksum(uint32_t local_ip, uint32_t remote_ip,
 }
 
 static __always_inline struct tcp_hdr *
-tcp_push_tcphdr(struct mbuf *m, tcpconn_t *c, uint8_t flags,
-		uint8_t off, uint16_t l4len)
+__tcp_add_tcphdr(struct mbuf *m, tcpconn_t *c, uint8_t flags,
+		uint8_t off, uint16_t l4len, bool push)
 {
 	struct tcp_hdr *tcphdr;
 	uint64_t rcv_nxt_wnd = load_acquire(&c->pcb.rcv_nxt_wnd);
@@ -37,7 +37,10 @@ tcp_push_tcphdr(struct mbuf *m, tcpconn_t *c, uint8_t flags,
 	uint32_t win = c->tx_last_win = rcv_nxt_wnd >> 32;
 
 	/* write the tcp header */
-	tcphdr = mbuf_push_hdr(m, *tcphdr);
+	if (push)
+		tcphdr = mbuf_push_hdr(m, *tcphdr);
+	else
+		tcphdr = mbuf_put_hdr(m, *tcphdr);
 	mbuf_mark_transport_offset(m);
 	tcphdr->sport = hton16(c->e.laddr.port);
 	tcphdr->dport = hton16(c->e.raddr.port);
@@ -49,6 +52,18 @@ tcp_push_tcphdr(struct mbuf *m, tcpconn_t *c, uint8_t flags,
 	tcphdr->sum = tcp_hdr_chksum(c->e.laddr.ip, c->e.raddr.ip,
 				     off * sizeof(uint32_t) + l4len);
 	return tcphdr;
+}
+
+static __always_inline struct tcp_hdr *
+tcp_push_tcphdr(struct mbuf *m, tcpconn_t *c, uint8_t flags,
+		uint8_t off, uint16_t l4len) {
+	return __tcp_add_tcphdr(m, c, flags, off, l4len, true);
+}
+
+static __always_inline struct tcp_hdr *
+tcp_put_tcphdr(struct mbuf *m, tcpconn_t *c, uint8_t flags,
+		uint8_t off, uint16_t l4len) {
+	return __tcp_add_tcphdr(m, c, flags, off, l4len, false);
 }
 
 /**
@@ -65,14 +80,14 @@ int tcp_tx_raw_rst(struct netaddr laddr, struct netaddr raddr, tcp_seq seq)
 	struct mbuf *m;
 	int ret;
 
-	m = net_tx_alloc_mbuf();
+	m = net_tx_alloc_mbuf_sz(sizeof(*tcphdr));
 	if (unlikely((!m)))
 		return -ENOMEM;
 
 	m->txflags = OLFLAG_TCP_CHKSUM;
 
 	/* write the tcp header */
-	tcphdr = mbuf_push_hdr(m, *tcphdr);
+	tcphdr = mbuf_put_hdr(m, *tcphdr);
 	tcphdr->sport = hton16(laddr.port);
 	tcphdr->dport = hton16(raddr.port);
 	tcphdr->seq = hton32(seq);
@@ -105,14 +120,14 @@ int tcp_tx_raw_rst_ack(struct netaddr laddr, struct netaddr raddr,
 	struct mbuf *m;
 	int ret;
 
-	m = net_tx_alloc_mbuf();
+	m = net_tx_alloc_mbuf_sz(sizeof(*tcphdr));
 	if (unlikely((!m)))
 		return -ENOMEM;
 
 	m->txflags = OLFLAG_TCP_CHKSUM;
 
 	/* write the tcp header */
-	tcphdr = mbuf_push_hdr(m, *tcphdr);
+	tcphdr = mbuf_put_hdr(m, *tcphdr);
 	tcphdr->sport = hton16(laddr.port);
 	tcphdr->dport = hton16(raddr.port);
 	tcphdr->seq = hton32(seq);
@@ -140,13 +155,13 @@ int tcp_tx_ack(tcpconn_t *c)
 	struct mbuf *m;
 	int ret;
 
-	m = net_tx_alloc_mbuf();
+	m = net_tx_alloc_mbuf_sz(sizeof(struct tcp_hdr));
 	if (unlikely(!m))
 		return -ENOMEM;
 
 	m->txflags = OLFLAG_TCP_CHKSUM;
 	m->seg_seq = load_acquire(&c->pcb.snd_nxt);
-	tcp_push_tcphdr(m, c, TCP_ACK, 5, 0);
+	tcp_put_tcphdr(m, c, TCP_ACK, 5, 0);
 
 	/* transmit packet */
 	tcp_debug_egress_pkt(c, m);
@@ -171,13 +186,13 @@ int tcp_tx_probe_window(tcpconn_t *c)
 	struct mbuf *m;
 	int ret;
 
-	m = net_tx_alloc_mbuf();
+	m = net_tx_alloc_mbuf_sz(sizeof(struct tcp_hdr));
 	if (unlikely(!m))
 		return -ENOMEM;
 
 	m->txflags = OLFLAG_TCP_CHKSUM;
 	m->seg_seq = load_acquire(&c->pcb.snd_una) - 1;
-	tcp_push_tcphdr(m, c, TCP_ACK, 5, 0);
+	tcp_put_tcphdr(m, c, TCP_ACK, 5, 0);
 
 	/* transmit packet */
 	tcp_debug_egress_pkt(c, m);
@@ -187,7 +202,7 @@ int tcp_tx_probe_window(tcpconn_t *c)
 	return ret;
 }
 
-static int tcp_push_options(struct mbuf *m, const struct tcp_options *opts)
+static int tcp_put_options(struct mbuf *m, const struct tcp_options *opts)
 {
 	uint32_t *ptr;
 	int len = 0;
@@ -195,13 +210,13 @@ static int tcp_push_options(struct mbuf *m, const struct tcp_options *opts)
 	/* WARNING: the order matters, as some devices are broken */
 
 	if (opts->opt_en & TCP_OPTION_WSCALE) {
-		ptr = (uint32_t *)mbuf_push(m, sizeof(uint32_t));
+		ptr = (uint32_t *)mbuf_put(m, sizeof(uint32_t));
 		*ptr = hton32((TCP_OPT_NOP << 24) | (TCP_OPT_WSCALE << 16) |
 			      (TCP_OLEN_WSCALE << 8) | opts->wscale);
 		len++;
 	}
 	if (opts->opt_en & TCP_OPTION_MSS) {
-		ptr = (uint32_t *)mbuf_push(m, sizeof(uint32_t));
+		ptr = (uint32_t *)mbuf_put(m, sizeof(uint32_t));
 		*ptr = hton32((TCP_OPT_MSS << 24) | (TCP_OLEN_MSS << 16) |
 			      opts->mss);
 		len++;
@@ -238,7 +253,7 @@ int tcp_tx_ctl(tcpconn_t *c, uint8_t flags, const struct tcp_options *opts)
 	m->flags = flags;
 
 	if (opts)
-		ret = tcp_push_options(m, opts);
+		ret = tcp_put_options(m, opts);
 	tcp_push_tcphdr(m, c, flags, 5 + ret, 0);
 	store_release(&c->pcb.snd_nxt, c->pcb.snd_nxt + 1);
 	list_add_tail(&c->txq, &m->link);
@@ -276,7 +291,7 @@ ssize_t tcp_tx_send(tcpconn_t *c, const void *buf, size_t len, bool push)
 	const char *pos = buf;
 	const char *end = pos + len;
 	ssize_t ret = 0;
-	size_t seglen;
+	size_t seglen, bufsz;
 	uint32_t mss = c->pcb.snd_mss;
 
 	assert(c->pcb.state >= TCP_STATE_ESTABLISHED);
@@ -294,12 +309,16 @@ ssize_t tcp_tx_send(tcpconn_t *c, const void *buf, size_t len, bool push)
 			seglen = MIN(end - pos, mss - mbuf_length(m));
 			m->seg_end += seglen;
 		} else {
-			m = net_tx_alloc_mbuf();
+			seglen = MIN(end - pos, mss);
+			if (push && pos + seglen == end)
+				bufsz = seglen;
+			else
+				bufsz = mss;
+			m = net_tx_alloc_mbuf_sz(bufsz);
 			if (unlikely(!m)) {
 				ret = -ENOBUFS;
 				break;
 			}
-			seglen = MIN(end - pos, mss);
 			m->seg_seq = c->pcb.snd_nxt;
 			m->seg_end = c->pcb.snd_nxt + seglen;
 			m->flags = TCP_ACK;
@@ -346,6 +365,7 @@ static int tcp_tx_retransmit_one(tcpconn_t *c, struct mbuf *m)
 	int ret;
 	uint8_t opts_len;
 	uint16_t l4len;
+	size_t sz;
 
 	l4len = m->seg_end - m->seg_seq;
 	if (m->flags & (TCP_SYN | TCP_FIN))
@@ -360,12 +380,12 @@ static int tcp_tx_retransmit_one(tcpconn_t *c, struct mbuf *m)
 	 * in such corner cases.
 	 */
 	if (unlikely(atomic_read(&m->ref) != 1)) {
-		struct mbuf *newm = net_tx_alloc_mbuf();
+		sz = sizeof(uint32_t) * opts_len + l4len;
+		struct mbuf *newm = net_tx_alloc_mbuf_sz(sz);
 		if (unlikely(!newm))
 			return -ENOMEM;
-		memcpy(mbuf_put(newm, sizeof(uint32_t) * opts_len + l4len),
-		       mbuf_transport_offset(m) + sizeof(struct tcp_hdr),
-		       sizeof(uint32_t) * opts_len + l4len);
+		memcpy(mbuf_put(newm, sz),
+		       mbuf_transport_offset(m) + sizeof(struct tcp_hdr), sz);
 		newm->flags = m->flags;
 		newm->seg_seq = m->seg_seq;
 		newm->seg_end = m->seg_end;

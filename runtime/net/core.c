@@ -123,8 +123,6 @@ static struct mbuf *net_rx_alloc_mbuf(struct rx_net_hdr *hdr)
 	mbuf_init(m, buf, hdr->len, 0);
 	m->len = hdr->len;
 	m->csum_type = hdr->csum_type;
-	m->csum = hdr->csum;
-	m->rss_hash = hdr->rss_hash;
 
 	m->release = (void (*)(struct mbuf *))sfree;
 
@@ -351,7 +349,6 @@ struct mbuf *net_tx_alloc_mbuf(void)
 
 	buf = (unsigned char *)m + MBUF_HEAD_LEN;
 	mbuf_init(m, buf, net_get_mtu(), MBUF_DEFAULT_HEADROOM);
-	m->csum_type = CHECKSUM_TYPE_NEEDED;
 	m->txflags = 0;
 	m->release_data = 0;
 	m->release = net_tx_release_mbuf;

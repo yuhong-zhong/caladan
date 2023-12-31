@@ -113,9 +113,12 @@ struct thread {
     bool        main_thread:1;
     bool        has_fsbase:1;
     bool        thread_ready:1;
+    bool        link_armed:1;
     bool        junction_thread;
     bool        thread_running;
     bool        in_syscall;
+    /* modified by interrupt handler; should not be shared with other bitfields */
+    bool        xsave_area_in_use:1;
     atomic8_t        interrupt_state;
     struct thread_tf    *entry_regs;
     unsigned long    junction_tstate_buf[22];
@@ -126,7 +129,6 @@ struct thread {
     struct thread_tf    tf;
     struct list_node    link;
     struct list_node    interruptible_link;
-    bool        link_armed;
 #ifdef GC
     struct list_node    gc_link;
     unsigned int        onk;

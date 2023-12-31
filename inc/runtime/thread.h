@@ -96,7 +96,7 @@ struct thread_tf {
 /* format of the trap frame set up by uintr_asm_entry */
 struct uintr_frame {
 	struct thread_tf general_regs;
-	unsigned long pad;
+	unsigned char *xsave_area;
 	unsigned long uirrv;
 	unsigned long rip;
 	unsigned long rflags;
@@ -118,7 +118,7 @@ struct thread {
     bool        in_syscall;
     atomic8_t        interrupt_state;
     struct thread_tf    *entry_regs;
-    unsigned long    junction_tstate_buf[20];
+    unsigned long    junction_tstate_buf[22];
     struct stack        *stack;
     uint16_t        last_cpu;
     uint16_t        cur_kthread;

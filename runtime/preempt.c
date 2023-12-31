@@ -27,6 +27,8 @@
 
 /* the current preemption count */
 DEFINE_PERTHREAD(unsigned int, preempt_cnt);
+/* whether uintr is enabled */
+bool uintr_enabled;
 /* perthread stack to use supply for UIPIs */
 DEFINE_PERTHREAD(void *, uintr_stack);
 /* maximum size in bytes needed for xsave */
@@ -170,8 +172,20 @@ void preempt(void)
 
 int preempt_init_thread(void)
 {
+	struct stack *s;
+	uint64_t stack_val;
+
 	perthread_store(preempt_cnt, PREEMPT_NOT_PENDING);
-	perthread_store(uintr_stack, (void *)REDZONE_SIZE);
+
+	if (!uintr_enabled)
+		return 0;
+
+	s = stack_alloc();
+	if (!s)
+		return -ENOMEM;
+
+	stack_val = ((uint64_t)&s->usable[STACK_PTR_SIZE]) | 1UL;
+	perthread_store(uintr_stack, (void *)stack_val);
 	return 0;
 }
 
@@ -213,6 +227,7 @@ int preempt_init(void)
 	}
 
 	log_info("uintr: enabled");
+	uintr_enabled = true;
 
 	ret = syscall(SYS_arch_prctl, ARCH_GET_XCOMP_SUPP, &xsave_features);
 	if (unlikely(ret)) {

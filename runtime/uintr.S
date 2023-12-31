@@ -7,8 +7,12 @@
 .globl uintr_asm_entry
 .type uintr_asm_entry, @function
 uintr_asm_entry:
-	// skip pad, rsp, rip
-	subq    $24, %rsp
+
+	// xstate_area
+	pushq   $0
+
+	// skip fsbase, orig_rax, rsp, rip
+	subq    $32, %rsp
 
 	// fill rest of trapframe
 	pushq   %rax
@@ -53,8 +57,8 @@ uintr_asm_return:
 	popq   %r15;
 	popq   %rax;
 
-	// remove rip, rsp, pad, uirrv
-	addq    $32, %rsp
+	// remove rip, rsp, orig_rax, fsbase, xsave_area, uirrv
+	addq    $48, %rsp
 
 	uiret
 	nop

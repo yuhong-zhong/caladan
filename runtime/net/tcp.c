@@ -863,11 +863,11 @@ struct netaddr tcp_remote_addr(tcpconn_t *c)
 }
 
 static ssize_t tcp_read_wait(tcpconn_t *c, size_t len,
-			     struct list_head *q, struct mbuf **mout)
+			     struct list_head *q, struct mbuf **mout, void *peek_buf)
 {
 	int ret;
 	struct mbuf *m;
-	size_t readlen = 0;
+	size_t tocopy, readlen = 0;
 	bool do_ack = false;
 
 	*mout = NULL;
@@ -890,6 +890,18 @@ static ssize_t tcp_read_wait(tcpconn_t *c, size_t len,
 	if (c->rx_closed) {
 		spin_unlock_np(&c->lock);
 		return -c->err;
+	}
+
+	if (unlikely(peek_buf != NULL)) {
+		list_for_each(&c->rxq, m, link) {
+			tocopy = MIN(mbuf_length(m), len - readlen);
+			memcpy(peek_buf + readlen, mbuf_data(m), tocopy);
+			readlen += tocopy;
+			if (len == readlen)
+				break;
+		}
+		spin_unlock_np(&c->lock);
+		return readlen;
 	}
 
 	/* pop off the mbufs that will be read */
@@ -948,6 +960,21 @@ static void tcp_read_finish(tcpconn_t *c, struct mbuf *m)
 }
 
 /**
+ * tcp_read_peek - reads data from a TCP connection without consuming the data.
+ * @c: the TCP connection
+ * @buf: a buffer to store the read data
+ * @len: the length of @buf
+ *
+ * Returns the number of bytes read, 0 if the connection is closed, or < 0
+ * if an error occurred.
+ */
+ssize_t tcp_read_peek(tcpconn_t *c, void *buf, size_t len)
+{
+	struct mbuf *m;
+	return tcp_read_wait(c, len, NULL, &m, buf);
+}
+
+/**
  * tcp_read - reads data from a TCP connection
  * @c: the TCP connection
  * @buf: a buffer to store the read data
@@ -966,7 +993,7 @@ ssize_t tcp_read(tcpconn_t *c, void *buf, size_t len)
 	list_head_init(&q);
 
 	/* wait for data to become available */
-	ret = tcp_read_wait(c, len, &q, &m);
+	ret = tcp_read_wait(c, len, &q, &m, NULL);
 
 	/* check if connection was closed */
 	if (ret <= 0)
@@ -1027,7 +1054,7 @@ ssize_t tcp_readv(tcpconn_t *c, const struct iovec *iov, int iovcnt)
 	list_head_init(&q);
 
 	/* wait for data to become available */
-	len = tcp_read_wait(c, len, &q, &m);
+	len = tcp_read_wait(c, len, &q, &m, NULL);
 
 	/* check if connection was closed */
 	if (len <= 0)

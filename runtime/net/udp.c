@@ -321,7 +321,7 @@ int udp_set_buffers(udpconn_t *c, int read_mbufs, int write_mbufs)
  * is >= @len in size. If the socket has been shutdown, returns 0.
  */
 ssize_t udp_read_from(udpconn_t *c, void *buf, size_t len,
-                      struct netaddr *raddr)
+                      struct netaddr *raddr, bool peek)
 {
 	ssize_t ret;
 	struct mbuf *m;
@@ -353,11 +353,15 @@ ssize_t udp_read_from(udpconn_t *c, void *buf, size_t len,
 		return -c->inq_err;
 	}
 
-	/* pop an mbuf and deliver the payload */
-	m = mbufq_pop_head(&c->inq);
-	if (--c->inq_len == 0 && !c->shutdown)
-		poll_clear(&c->poll_src, POLLIN);
-	spin_unlock_np(&c->inq_lock);
+	if (likely(!peek)) {
+		/* pop an mbuf and deliver the payload */
+		m = mbufq_pop_head(&c->inq);
+		if (--c->inq_len == 0 && !c->shutdown)
+			poll_clear(&c->poll_src, POLLIN);
+		spin_unlock_np(&c->inq_lock);
+	} else {
+		m = mbufq_peak_head(&c->inq);
+	}
 
 	ret = MIN(len, mbuf_length(m));
 	memcpy(buf, mbuf_data(m), ret);
@@ -371,7 +375,11 @@ ssize_t udp_read_from(udpconn_t *c, void *buf, size_t len,
 			       c->e.raddr.port == raddr->port);
 		}
 	}
-	mbuf_free(m);
+
+	if (likely(!peek))
+		mbuf_free(m);
+	else
+		spin_unlock_np(&c->inq_lock);
 	return ret;
 }
 
@@ -495,7 +503,7 @@ ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
  */
 ssize_t udp_read(udpconn_t *c, void *buf, size_t len)
 {
-	return udp_read_from(c, buf, len, NULL);
+	return udp_read_from(c, buf, len, NULL, false);
 }
 
 /**

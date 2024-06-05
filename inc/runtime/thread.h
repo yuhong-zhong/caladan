@@ -126,6 +126,7 @@ struct thread {
     uint16_t        last_cpu;
     uint16_t        cur_kthread;
     uint64_t        ready_tsc;
+    uint64_t        total_cycles;
     struct thread_tf    tf;
     struct list_node    link;
     struct list_node    interruptible_link;
@@ -134,6 +135,8 @@ struct thread {
     unsigned int        onk;
 #endif
 };
+
+extern uint64_t thread_get_total_cycles(thread_t *th);
 
 /*
  * High-level routines, use this API most of the time.

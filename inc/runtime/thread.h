@@ -121,7 +121,7 @@ struct thread {
     bool        xsave_area_in_use:1;
     atomic8_t        interrupt_state;
     struct thread_tf    *entry_regs;
-    unsigned long    junction_tstate_buf[22];
+    unsigned long    junction_tstate_buf[25];
     struct stack        *stack;
     uint16_t        last_cpu;
     uint16_t        cur_kthread;

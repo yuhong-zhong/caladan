@@ -19,6 +19,7 @@ serde = "1.0"
 net2 = "0.2"
 mersenne_twister = "1.1.1"
 shenango = { path = "../../bindings/rust" }
+serde_json = "1.0.128"
 
 [profile.release]
 debug=false

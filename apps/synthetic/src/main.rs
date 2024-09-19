@@ -17,7 +17,7 @@ extern crate arrayvec;
 
 use arrayvec::ArrayVec;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::f32::INFINITY;
 use std::io;
 use std::io::{Error, ErrorKind, Read, Write};
@@ -67,6 +67,9 @@ use reflex::ReflexProtocol;
 
 mod http;
 use http::HttpProtocol;
+
+mod serverless;
+use serverless::InvokeProtocol;
 
 mod distribution;
 use distribution::Distribution;
@@ -673,6 +676,7 @@ fn run_client_worker(
     let socket2 = socket.clone();
     let rproto = proto.clone();
     let wg2 = wg.clone();
+
     let receive_thread = backend.spawn_thread(move || {
         let mut recv_buf = vec![0; 4096];
         let mut receive_times = vec![None; packets_per_thread];
@@ -701,7 +705,6 @@ fn run_client_worker(
         }
         receive_times
     });
-
     // If the send or receive thread is still running 500 ms after it should have finished,
     // then stop it by triggering a shutdown on the socket.
     let last = packets[packets.len() - 1].target_start;
@@ -970,6 +973,7 @@ fn run_closed_loop_client(
                         proto, backend, addr, tport, wg, wg_start, depth, start, end_time,
                     )
                 })
+
             })
         })
         .collect();
@@ -989,6 +993,221 @@ fn run_closed_loop_client(
     let total_requests: usize = conn_threads.into_iter().map(|s| s.join().unwrap()).sum();
     println!("RPS: {}", total_requests as u64 / runtime.as_secs());
     true
+}
+
+fn run_fn_dispatch_server(
+    proto: Arc<Box<dyn LoadgenProtocol>>,
+    backend: Backend,
+    nthreads: usize,
+    schedules: Vec<RequestSchedule>,
+    shutdown: bool,
+) {
+    let schedules = Arc::new(schedules);
+    let wg = shenango::WaitGroup::new();
+    wg.add(nthreads as i32);
+    let fn_name_wg = shenango::WaitGroup::new();
+    fn_name_wg.add(nthreads as i32);
+    let wg_start = shenango::WaitGroup::new();
+    wg_start.add(1);
+
+    let mut data: HashMap<String, f64> = HashMap::new();
+
+    let worker_threads: Vec<JoinHandle<Option<(String, f64)>>> = (0..nthreads)
+        .into_iter()
+        .map(|i| {
+            let proto = proto.clone();
+            let wg = wg.clone();
+            let fn_name_wg = fn_name_wg.clone();
+            let wg_start = wg_start.clone();
+            let schedules = schedules.clone();
+
+            backend.spawn_thread(move || {
+                run_fn_dispatch_worker(
+                    proto, backend, wg, fn_name_wg, wg_start, schedules, i as u16, shutdown,
+                )
+            })
+        })
+        .collect();
+    
+    wg.wait();
+    fn_name_wg.wait();
+    wg_start.done();
+
+    let tputs: Vec<(String, f64)> = worker_threads
+        .into_iter()
+        .map(|s| s.join().unwrap().unwrap())
+        .collect();
+
+    for (name, tput) in tputs {
+        data.entry(name).and_modify(|v| *v += tput).or_insert(tput);
+    }
+
+    if shutdown {
+        println!("data: {:?}", data);
+    }
+}
+
+fn fn_dispatch_worker(
+    index: u16,
+    mut socket: Connection,
+    fn_name: String,
+    packets: &mut Vec<Packet>,
+    proto: Arc<Box<dyn LoadgenProtocol>>,
+    shutdown: bool,
+    backend: Backend,
+) -> Option<(String, f64)> {
+    let mut buf = vec![0; 4096];
+    let start = Instant::now();
+    let mut nrequests = 0;
+
+    let mut recv = vec![0; 4096];
+    let mut recv_buf = Buffer::new(&mut recv);
+
+    for (i, packet) in packets.iter_mut().enumerate() {
+        buf.clear();
+        // write function name to buffer
+        buf.extend(fn_name.as_bytes());
+        proto.gen_req(i + 1, packet, &mut buf);
+
+        if let Err(e) = socket.write_all(&buf[..]) {
+            if e.kind() == ErrorKind::UnexpectedEof {
+                break;
+            }
+            match e.raw_os_error() {
+                Some(-32) | Some(-103) | Some(-104) => {}
+                _ => println!("Send thread ({}/{}): {}", i, packets.len(), e),
+            }
+            return None;
+        }
+
+        match proto.read_response(&socket, &mut recv_buf) {
+            Ok(_) => {
+                nrequests += 1;
+            }
+            Err(e) => {
+                if e.kind() == ErrorKind::UnexpectedEof {
+                    break;
+                }
+                match e.raw_os_error() {
+                    Some(-103) | Some(-104) => break,
+                    _ => (),
+                }
+            }
+        }
+
+        if start.elapsed().as_micros() >= 10000000 {
+            break;
+        }
+    }
+
+    let done = start.elapsed().as_micros();
+
+    if shutdown {
+        proto.gen_req(0, &packets.pop().unwrap(), &mut buf);
+
+        if let Err(e) = socket.write_all(&buf[..]) {
+            println!("error sending shutdown {}", e);
+        }
+
+        match proto.read_response(&socket, &mut recv_buf) {
+            Ok(_) => {
+                if index == 0 {
+                    println!("got shutdown reply!");
+                }
+            }
+            Err(e) => {
+                if index == 0 {
+                    println!("error reading shutdown reply: {}", e);
+                }
+            }
+        }
+    }
+
+    backend.sleep(Duration::from_secs(10));
+
+    socket.shutdown();
+
+    Some((fn_name, nrequests as f64 / done as f64 * 10000000.0))
+}
+
+fn run_fn_dispatch_worker(
+    proto: Arc<Box<dyn LoadgenProtocol>>,
+    backend: Backend,
+    wg: shenango::WaitGroup,
+    fn_name_wg: shenango::WaitGroup,
+    wg_start: shenango::WaitGroup,
+    schedules: Arc<Vec<RequestSchedule>>,
+    index: u16,
+    shutdown: bool,
+) -> Option<(String, f64)> {
+    let src_addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), index + 100 + 1);
+    let tcpq = backend
+        .create_tcp_listener(src_addr)
+        .map_err(|e| println!("{}, {}", src_addr, e))
+        .unwrap();
+
+    let (mut packets, _) = gen_packets_for_schedule(&schedules);
+    match tcpq.accept() {
+        Ok(c) => {
+            wg.done();
+
+            // let mut recv = vec![0; 4096];
+            // let mut recv_buf = Buffer::new(&mut recv);
+
+            // let (len, _) = proto.read_response(&c, &mut recv_buf).unwrap();
+
+            // retrying on connection reset / timed out. not sure if this is breaking things
+            let mut len;
+            let mut recv;
+            let mut recv_buf;
+            loop {
+                recv = vec![0; 4096];
+                recv_buf = Buffer::new(&mut recv);
+
+                len = match proto.read_response(&c, &mut recv_buf) {
+                    Ok((l, _)) => l,
+                    Err(e) => {
+                        let err = e.raw_os_error();
+                        if err != Some(110) && err != Some(104) {
+                            panic!("read error {}", e.raw_os_error().unwrap());
+                        } else if index == 0 {
+                            println!("retrying");
+                        }
+                        0
+                    }
+                };
+
+                if len != 0 {
+                    break;
+                }
+            }
+
+            let mut name_bytes: Vec<u8> = vec![0u8; len];
+            name_bytes.copy_from_slice(&recv[0..len]);
+            let fn_name = String::from_utf8(name_bytes).unwrap();
+            fn_name_wg.done();
+
+            if index == 0 {
+                println!("got function name");
+            }
+
+            wg_start.wait();
+            return fn_dispatch_worker(
+                index,
+                c,
+                fn_name,
+                &mut packets,
+                proto.clone(),
+                shutdown,
+                backend.clone(),
+            );
+        }
+        Err(e) => {
+            println!("{} error: {}", src_addr, e);
+        }
+    }
+
+    return None;
 }
 
 fn run_client(
@@ -1194,6 +1413,7 @@ fn main() {
                     "linux-server",
                     "linux-client",
                     "runtime-client",
+                    "fn-dispatch",
                     "spawner-server",
                     "local-client",
                 ])
@@ -1234,7 +1454,14 @@ fn main() {
                 .short("p")
                 .long("protocol")
                 .value_name("PROTOCOL")
-                .possible_values(&["synthetic", "memcached", "dns", "reflex", "http"])
+                .possible_values(&[
+                    "synthetic",
+                    "memcached",
+                    "dns",
+                    "reflex",
+                    "http",
+                    "serverless",
+                ])
                 .default_value("synthetic")
                 .help("Server protocol"),
         )
@@ -1377,6 +1604,7 @@ fn main() {
         .args(&DnsProtocol::args())
         .args(&ReflexProtocol::args())
         .args(&HttpProtocol::args())
+        .args(&InvokeProtocol::args())
         .get_matches();
 
     let addrs: Vec<SocketAddrV4> = matches
@@ -1424,6 +1652,7 @@ fn main() {
             distribution,
         ))),
         "http" => Arc::new(Box::new(HttpProtocol::with_args(&matches, tport))),
+        "serverless" => Arc::new(Box::new(InvokeProtocol::with_args(&matches, tport))),
         _ => unreachable!(),
     };
 
@@ -1434,7 +1663,7 @@ fn main() {
     let mode = matches.value_of("mode").unwrap();
     let backend = match mode {
         "linux-server" | "linux-client" => Backend::Linux,
-        "spawner-server" | "runtime-client" | "local-client" => Backend::Runtime,
+        "spawner-server" | "runtime-client" | "local-client" | "fn-dispatch" => Backend::Runtime,
         _ => unreachable!(),
     };
 
@@ -1648,6 +1877,39 @@ fn main() {
                 }
             });
         }
+        "fn-dispatch" => {
+            backend.init_and_run(config, move || {
+                // doing a warmup regardless
+                let sched = gen_classic_packet_schedule(
+                    Duration::from_secs(1),
+                    packets_per_second,
+                    output,
+                    distribution,
+                    0,
+                    nthreads,
+                    discard_pct,
+                );
+
+                let proto2 = proto.clone();
+                let backend2 = backend.clone();
+                run_fn_dispatch_server(proto, backend, nthreads, sched, false);
+
+                let sched = gen_classic_packet_schedule(
+                    runtime,
+                    packets_per_second,
+                    output,
+                    distribution,
+                    0,
+                    nthreads,
+                    discard_pct,
+                );
+
+                run_fn_dispatch_server(proto2, backend2, nthreads, sched, true);
+                println!("done");
+                std::process::exit(0);
+            });
+        }
+
         _ => unreachable!(),
     };
 }

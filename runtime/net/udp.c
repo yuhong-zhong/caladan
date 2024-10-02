@@ -320,17 +320,18 @@ int udp_set_buffers(udpconn_t *c, int read_mbufs, int write_mbufs)
  * Returns the number of bytes in the datagram, or @len if the datagram
  * is >= @len in size. If the socket has been shutdown, returns 0.
  */
-ssize_t udp_read_from(udpconn_t *c, void *buf, size_t len,
-                      struct netaddr *raddr, bool peek)
+ssize_t udp_read_from2(udpconn_t *c, void *buf, size_t len,
+                      struct netaddr *raddr, bool peek, bool nonblocking)
 {
 	ssize_t ret;
 	struct mbuf *m;
 
 	spin_lock_np(&c->inq_lock);
+	nonblocking |= c->nonblocking;
 
 	/* block until there is an actionable event */
 	while (mbufq_empty(&c->inq) && !c->inq_err && !c->shutdown) {
-		if (c->nonblocking) {
+		if (nonblocking) {
 			spin_unlock_np(&c->inq_lock);
 			return -EAGAIN;
 		}
@@ -419,8 +420,8 @@ static void udp_tx_release_mbuf(struct mbuf *m)
  * Returns the number of payload bytes sent in the datagram. If an error
  * occurs, returns < 0 to indicate the error code.
  */
-ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
-                     const struct netaddr *raddr)
+ssize_t udp_write_to2(udpconn_t *c, const void *buf, size_t len,
+                     const struct netaddr *raddr, bool nonblocking)
 {
 	struct netaddr addr;
 	ssize_t ret;
@@ -441,10 +442,11 @@ ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
 	}
 
 	spin_lock_np(&c->outq_lock);
+	nonblocking |= c->nonblocking;
 
 	/* block until there is an actionable event */
 	while (c->outq_len >= c->outq_cap && !c->shutdown) {
-		if (c->nonblocking) {
+		if (nonblocking) {
 			spin_unlock_np(&c->outq_lock);
 			return -EAGAIN;
 		}
@@ -503,7 +505,7 @@ ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
  */
 ssize_t udp_read(udpconn_t *c, void *buf, size_t len)
 {
-	return udp_read_from(c, buf, len, NULL, false);
+	return udp_read_from(c, buf, len, NULL);
 }
 
 /**

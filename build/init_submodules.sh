@@ -54,7 +54,7 @@ export PKG_CONFIG_PATH=$PWD/rdma-core/build/lib/pkgconfig
 
 
 cd dpdk
-git apply ../build/dpdk.patch
+# git apply ../build/dpdk.patch
 meson build
 meson configure -Ddisable_drivers=$disable_driver -Dexamples='' -Denable_kmods=false -Dtests=false build
 meson configure -Dprefix=$PWD/build build
@@ -77,8 +77,8 @@ export PKG_CONFIG_PATH=
 
 echo building PCM
 cd deps/pcm
-rm -f src/pcm-caladan.cpp
-patch -p1 -N < ../../build/pcm.patch
+# rm -f src/pcm-caladan.cpp
+# patch -p1 -N < ../../build/pcm.patch
 mkdir -p build
 cd build
 cmake ..

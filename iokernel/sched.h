@@ -84,6 +84,8 @@ extern unsigned int sched_siblings[NCPU];
 extern unsigned int sched_dp_core;
 extern unsigned int sched_ctrl_core;
 extern unsigned int sched_linux_core;
+extern bool sched_dp_core_supplied;
+extern bool sched_ctrl_core_supplied;
 /* per socket state */
 struct socket {
 	DEFINE_BITMAP(cores, NCPU);

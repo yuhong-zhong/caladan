@@ -261,6 +261,12 @@ int main(int argc, char *argv[])
 				return -EINVAL;
 			}
 			managed_numa_node = atoi(argv[++i]);
+		} else if (!strcmp(argv[i], "sched_dp_core")) {
+			sched_dp_core = atoi(argv[++i]);
+			sched_dp_core_supplied = true;
+		} else if (!strcmp(argv[i], "sched_ctrl_core")) {
+			sched_ctrl_core = atoi(argv[++i]);
+			sched_ctrl_core_supplied = true;
 		} else if (!strcmp(argv[i], "noidlefastwake")) {
 			cfg.noidlefastwake = true;
 		} else if (!strcmp(argv[i], "dpactiverss")) {

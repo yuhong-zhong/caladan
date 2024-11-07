@@ -138,6 +138,8 @@ struct iokernel_info {
 	bool			external_directpath_enabled;
 	bool			external_directpath_rmp;
 	bool			transparent_hugepages;
+	uint64_t		rx_cxl_shm_offset;
+	uint64_t		magic_number;
 };
 
 BUILD_ASSERT(sizeof(struct iokernel_info) <= IOKERNEL_INFO_SIZE);

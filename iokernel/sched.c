@@ -996,7 +996,6 @@ int sched_init(void)
 	 * second pass: determine available CPUs
 	 */
 
-	log_info("[CXL] allowing all NUMA nodes in sched.c");
 	for (i = 0; i < cpu_count; i++) {
 		if (managed_numa_node != -1 &&
 		    cpu_info_tbl[i].package != managed_numa_node &&

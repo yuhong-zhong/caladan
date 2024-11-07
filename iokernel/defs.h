@@ -17,6 +17,9 @@
 
 #include "ref.h"
 
+#define ROUND_DOWN(a, b) ((a) / (b) * (b))
+#define ROUND_UP(a, b) (((a) + (b) - 1) / (b) * (b))
+
 #define STATS 1
 
 /*
@@ -418,6 +421,7 @@ extern bool rx_send_to_runtime(struct proc *p, uint32_t hash, uint64_t cmd,
  * Initialization
  */
 
+extern int cxl_init(void);
 extern int ksched_init(void);
 extern int sched_init(void);
 extern int simple_init(void);
@@ -445,6 +449,22 @@ extern int managed_numa_node;
 extern pthread_barrier_t init_barrier;
 
 extern int pin_thread(pid_t tid, int core);
+
+/*
+ * CXL memory allocation
+ */
+
+extern const char *iok_cxl_path;
+extern uint64_t iok_cxl_size;
+#define CXL_FALLBACK_SIZE (1UL << 34UL)
+
+extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset);
+
+#define CXL_CLIENT_SIZE (1UL << 30UL)
+extern void *cxl_alloc_client(uint64_t *out_cxl_offset);
+extern void cxl_free_client(void *ptr);
+
+uint64_t virt_addr_to_phys_addr(uint64_t virtual_addr);
 
 /*
  * dataplane RX/TX functions

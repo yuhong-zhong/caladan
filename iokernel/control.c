@@ -165,7 +165,7 @@ static int control_init_hwq(struct shm_region *r,
 	return 0;
 }
 
-static struct proc *control_create_proc(int mem_fd, size_t len,
+static struct proc *control_create_proc(void *shbuf, size_t len,
 		 pid_t pid)
 {
 	struct control_hdr hdr;
@@ -173,18 +173,16 @@ static struct proc *control_create_proc(int mem_fd, size_t len,
 	size_t nr_pages;
 	struct proc *p = NULL;
 	struct thread_spec *threads = NULL;
-	void *shbuf = NULL;
 	int i, ret;
 
 	/* attach the shared memory region */
 	if (len < sizeof(hdr))
 		goto fail;
 
-	shbuf = mmap(NULL, len, PROT_READ|PROT_WRITE, MAP_SHARED, mem_fd, 0);
-	if (shbuf == MAP_FAILED)
-		goto fail;
 	reg.base = shbuf;
 	reg.len = len;
+
+	// CXL-TODO: add clflush
 
 	/* parse the control header */
 	memcpy(&hdr, (struct control_hdr *)shbuf, sizeof(hdr)); /* TOCTOU */
@@ -296,18 +294,17 @@ static struct proc *control_create_proc(int mem_fd, size_t len,
 
 	/* free temporary allocations */
 	free(threads);
-	close(mem_fd);
 
 	return p;
 
 fail:
-	close(mem_fd);
 	if (p)
 		free(p->overflow_queue);
 	free(threads);
 	free(p);
 	if (reg.base)
-		munmap(reg.base, reg.len);
+		// munmap(reg.base, reg.len);
+		cxl_free_client(reg.base - PGSIZE_2MB);
 	kill(pid, SIGINT);
 	log_err("control: couldn't attach pid %d", pid);
 	return NULL;
@@ -319,7 +316,8 @@ static void control_destroy_proc(struct proc *p)
 		release_directpath_ctx(p);
 
 	nr_clients--;
-	munmap(p->region.base, p->region.len);
+	// munmap(p->region.base, p->region.len);
+	cxl_free_client(p->region.base - PGSIZE_2MB);
 	free(p->overflow_queue);
 	free(p);
 }
@@ -329,10 +327,12 @@ static void control_add_client(void)
 	struct proc *p;
 	struct ucred ucred;
 	socklen_t len;
-	size_t shm_len;
+	uint64_t client_cxl_offset = 0, client_cxl_len;
+	void *client_shm_buf = NULL;
+	uint64_t client_status_code;
 	ssize_t ret;
 	int fd;
-	int mem_fd;
+	// int mem_fd;
 
 	fd = accept(controlfd, NULL, NULL);
 	if (fd == -1) {
@@ -351,20 +351,52 @@ static void control_add_client(void)
 		goto fail;
 	}
 
-	ret = recv_fd(fd, &mem_fd);
-	if (ret) {
-		log_err("control: recv_fd() failed [%s]", strerror(errno));
-		goto fail;
+	client_shm_buf = cxl_alloc_client(&client_cxl_offset);
+	RT_BUG_ON(!client_shm_buf);
+
+	// CXL-TODO: use nt store
+	*((struct iokernel_info *) client_shm_buf) = *iok_info;
+
+	ret = write(fd, &client_cxl_offset, sizeof(client_cxl_offset));
+	if (ret != sizeof(client_cxl_offset)) {
+		log_err("control_add_client: write(client_cxl_offset) failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
 	}
 
-	ret = read(fd, &shm_len, sizeof(shm_len));
-	if (ret != sizeof(shm_len)) {
-		log_err("control: read() failed, len=%ld [%s]",
+	client_cxl_len = CXL_CLIENT_SIZE;
+	ret = write(fd, &client_cxl_len, sizeof(client_cxl_len));
+	if (ret != sizeof(client_cxl_len)) {
+		log_err("control_add_client: write(client_cxl_len) failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	log_info("control_add_client: client_cxl_offset: 0x%lx, client_cxl_len: 0x%lx", client_cxl_offset, client_cxl_len);
+	log_info("control_add_client: waiting for client to register to iokernel");
+
+	ret = read(fd, &client_status_code, sizeof(client_status_code));
+	if (ret != sizeof(client_status_code)) {
+		log_err("control_add_client: read(client_status_code) failed, len=%ld [%s]",
 			ret, strerror(errno));
-		goto fail;
+		RT_BUG_ON(true);
 	}
+	RT_BUG_ON(client_status_code != 0);
 
-	p = control_create_proc(mem_fd, shm_len, ucred.pid);
+	log_info("control_add_client: client registered to iokernel");
+
+	// ret = recv_fd(fd, &mem_fd);
+	// if (ret) {
+	// 	log_err("control: recv_fd() failed [%s]", strerror(errno));
+	// 	goto fail;
+	// }
+
+	// ret = read(fd, &shm_len, sizeof(shm_len));
+	// if (ret != sizeof(shm_len)) {
+	// 	log_err("control: read() failed, len=%ld [%s]",
+	// 		ret, strerror(errno));
+	// 	goto fail;
+	// }
+
+	p = control_create_proc(client_shm_buf + PGSIZE_2MB, client_cxl_len - PGSIZE_2MB, ucred.pid);
 	if (!p) {
 		log_err("control: failed to create process '%d'", ucred.pid);
 		goto fail;
@@ -584,18 +616,21 @@ int control_init(void)
 	pthread_t tid;
 	int sfd, ret;
 	void *shbuf;
+	uint64_t shbuf_cxl_offset;
 
 	if (!cfg.vfio_directpath) {
-		shbuf = mem_map_shm(INGRESS_MBUF_SHM_KEY, NULL, INGRESS_MBUF_SHM_SIZE,
-				cfg.no_hugepages ? PGSIZE_4KB : PGSIZE_2MB, true);
-		if (shbuf == MAP_FAILED) {
-			log_err("control: failed to map rx buffer area (%s)", strerror(errno));
-			if (errno == EEXIST)
-				log_err("Shared memory region is already mapped. Please close any "
-					    "running iokernels, and be sure to run "
-					    "scripts/setup_machine.sh to set proper sysctl parameters.");
-			return -1;
-		}
+		shbuf = cxl_early_alloc(INGRESS_MBUF_SHM_SIZE, PGSIZE_2MB, &shbuf_cxl_offset);
+		RT_BUG_ON(shbuf == NULL);
+		// shbuf = mem_map_shm(INGRESS_MBUF_SHM_KEY, NULL, INGRESS_MBUF_SHM_SIZE,
+		// 		cfg.no_hugepages ? PGSIZE_4KB : PGSIZE_2MB, true);
+		// if (shbuf == MAP_FAILED) {
+		// 	log_err("control: failed to map rx buffer area (%s)", strerror(errno));
+		// 	if (errno == EEXIST)
+		// 		log_err("Shared memory region is already mapped. Please close any "
+		// 			    "running iokernels, and be sure to run "
+		// 			    "scripts/setup_machine.sh to set proper sysctl parameters.");
+		// 	return -1;
+		// }
 		dp.ingress_mbuf_region.base = shbuf;
 		dp.ingress_mbuf_region.len = INGRESS_MBUF_SHM_SIZE;
 
@@ -609,6 +644,8 @@ int control_init(void)
 
 	iok_info = (struct iokernel_info *)shbuf;
 	memcpy(iok_info->managed_cores, sched_allowed_cores, sizeof(sched_allowed_cores));
+	iok_info->rx_cxl_shm_offset = shbuf_cxl_offset;
+	iok_info->magic_number = 0xbeef;
 
 	if (nic_pci_addr_str)
 		memcpy(&iok_info->directpath_pci, &nic_pci_addr, sizeof(nic_pci_addr));

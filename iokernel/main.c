@@ -43,6 +43,7 @@ static const struct init_entry iok_init_handlers[] = {
 	IOK_INITIALIZER(base),
 
 	/* general iokernel */
+	IOK_INITIALIZER(cxl),
 	IOK_INITIALIZER(ksched),
 	IOK_INITIALIZER(sched),
 	IOK_INITIALIZER(simple),
@@ -267,6 +268,10 @@ int main(int argc, char *argv[])
 		} else if (!strcmp(argv[i], "sched_ctrl_core")) {
 			sched_ctrl_core = atoi(argv[++i]);
 			sched_ctrl_core_supplied = true;
+		} else if (!strcmp(argv[i], "iok_cxl_path")) {
+			iok_cxl_path = argv[++i];
+		} else if (!strcmp(argv[i], "iok_cxl_size")) {
+			iok_cxl_size = (uint64_t) atoll(argv[++i]);
 		} else if (!strcmp(argv[i], "noidlefastwake")) {
 			cfg.noidlefastwake = true;
 		} else if (!strcmp(argv[i], "dpactiverss")) {

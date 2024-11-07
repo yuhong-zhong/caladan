@@ -23,6 +23,9 @@
 #include <runtime/rcu.h>
 #include <runtime/preempt.h>
 
+#define ROUND_DOWN(a, b) ((a) / (b) * (b))
+#define ROUND_UP(a, b) (((a) + (b) - 1) / (b) * (b))
+
 
 /*
  * constant limits
@@ -230,9 +233,15 @@ stack_init_to_rsp_with_buf(struct stack *s, void **buf, size_t buf_len,
  * ioqueues
  */
 
+extern const char *rt_cxl_path;
+
 struct iokernel_control {
 	int fd;
-	int mem_fd;
+
+	// int mem_fd;
+	uint8_t *cxl_shm_buf;
+	uint64_t cxl_shm_len;
+
 	struct control_hdr *hdr;
 	struct thread_spec *threads;
 	const struct iokernel_info *iok_info;

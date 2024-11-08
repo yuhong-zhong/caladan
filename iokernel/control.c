@@ -211,7 +211,7 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 	ref_init(&p->ref);
 	p->region = reg;
 	p->removed = false;
-	p->sched_cfg = hdr.sched_cfg;
+	memcpy(&p->sched_cfg, &hdr.sched_cfg, sizeof(p->sched_cfg));
 	p->thread_count = hdr.thread_count;
 	if (!hdr.ip_addr)
 		goto fail;

@@ -6,6 +6,7 @@
 #include <base/assert.h>
 #include <base/log.h>
 #include <iokernel/shm.h>
+#include <x86intrin.h>
 #include "defs.h"
 
 #define LIKELY(x) (__builtin_expect((x), 1))
@@ -127,6 +128,18 @@ uint64_t virt_addr_to_phys_addr(uint64_t virtual_addr) {
 	                         + (virtual_addr % PGSIZE_4KB);
 	RT_BUG_ON((physical_addr % PGSIZE_4KB) != (virtual_addr % PGSIZE_4KB));
 	return physical_addr;
+}
+
+void batch_clflush(void *addr, uint64_t len)
+{
+        RT_BUG_ON((uint64_t) addr % CACHE_LINE_SIZE != 0);
+        RT_BUG_ON(len % CACHE_LINE_SIZE != 0);
+
+        uint8_t *ptr = (uint8_t *) addr;
+        for (uint64_t i = 0; i < len / CACHE_LINE_SIZE; ++i) {
+                _mm_clflush(ptr + i * CACHE_LINE_SIZE);
+        }
+        _mm_mfence();
 }
 
 int cxl_init(void)

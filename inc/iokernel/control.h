@@ -104,6 +104,9 @@ struct sched_spec {
 	uint64_t		qdelay_us;
 	uint64_t		ht_punish_us;
 	uint64_t		quantum_us;
+#ifdef NO_SCHED
+	DEFINE_BITMAP(rt_cores, NCPU);
+#endif
 };
 
 #define CONTROL_HDR_MAGIC	0x696f6b3a /* "iok:" */

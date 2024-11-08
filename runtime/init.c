@@ -166,6 +166,10 @@ int runtime_init(const char *cfgpath, thread_fn_t main_fn, void *arg)
 	pthread_t tid[NCPU];
 	int ret, i;
 
+	ret = cfg_early_load(cfgpath);
+	if (unlikely(ret))
+		return ret;
+
 	ret = ioqueues_init_early();
 	if (unlikely(ret))
 		return ret;

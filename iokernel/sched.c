@@ -44,6 +44,10 @@ int sched_cores_nr;
 
 static int nr_guaranteed;
 
+#ifdef NO_SCHED
+DEFINE_BITMAP(allocated_cores, NCPU);
+#endif
+
 LIST_HEAD(poll_list);
 
 struct core_state {
@@ -708,7 +712,9 @@ static void sched_detect_io_for_idle_runtime(struct proc *p)
 		sched_measure_hardware_delay(th, &th->directpath_hwq, false, &busy,
 			                         &standing_queue, &delay);
 		if (busy) {
+#ifndef NO_SCHED
 			sched_add_core(p);
+#endif  /* NO_SCHED */
 			return;
 		}
 
@@ -844,7 +850,9 @@ void sched_poll(void)
 	 * final pass --- let the scheduler policy decide how to respond
 	 */
 
+#ifndef NO_SCHED
 	sched_ops->sched_poll(now, idle_cnt, idle);
+#endif  /* NO_SCHED */
 	ksched_send_intrs();
 }
 
@@ -856,12 +864,16 @@ void sched_poll(void)
  */
 int sched_add_core(struct proc *p)
 {
+#ifndef NO_SCHED
 	if (cfg.noidlefastwake) {
 		proc_enable_sched_poll(p);
 		return 0;
 	}
 
 	return sched_ops->notify_core_needed(p);
+#else
+	return 0;
+#endif  /* NO_SCHED */
 }
 
 /**
@@ -873,6 +885,20 @@ int sched_add_core(struct proc *p)
 int sched_attach_proc(struct proc *p)
 {
 	int i, ret;
+#ifdef NO_SCHED
+	int num_cores;
+
+	num_cores = bitmap_popcount(p->sched_cfg.rt_cores, NCPU);
+	RT_BUG_ON(num_cores != p->sched_cfg.guaranteed_cores);
+	RT_BUG_ON(num_cores != p->sched_cfg.max_cores);
+	RT_BUG_ON(num_cores != p->thread_count);
+
+	bitmap_for_each_set(p->sched_cfg.rt_cores, NCPU, i) {
+		RT_BUG_ON(bitmap_test(allocated_cores, i));
+		RT_BUG_ON(!bitmap_test(sched_allowed_cores, i));
+		bitmap_set(allocated_cores, i);
+	}
+#endif  /* NO_SCHED */
 
 	if (p->sched_cfg.guaranteed_cores + nr_guaranteed > sched_cores_nr) {
 		log_err("guaranteed cores exceeds total core count");
@@ -888,12 +914,18 @@ int sched_attach_proc(struct proc *p)
 		list_add(&p->idle_threads, &p->threads[i].idle_link);
 	}
 
+	nr_guaranteed += p->sched_cfg.guaranteed_cores;
+#ifdef NO_SCHED
+	bitmap_for_each_set(p->sched_cfg.rt_cores, NCPU, i) {
+		ret = sched_run_on_core(p, i);
+		RT_BUG_ON(ret != 0);
+	}
+#else
 	ret = sched_ops->proc_attach(p, &p->sched_cfg);
 	if (ret)
 		return ret;
-
-	nr_guaranteed += p->sched_cfg.guaranteed_cores;
 	proc_enable_sched_poll_nocheck(p);
+#endif  /* NO_SCHED */
 
 	return 0;
 }
@@ -904,8 +936,17 @@ int sched_attach_proc(struct proc *p)
  */
 void sched_detach_proc(struct proc *p)
 {
+#ifdef NO_SCHED
+	int i, ret;
+	bitmap_for_each_set(p->sched_cfg.rt_cores, NCPU, i) {
+		ret = sched_idle_on_core(0, i);
+		RT_BUG_ON(ret != 0);
+		bitmap_clear(allocated_cores, i);
+	}
+#else
 	proc_disable_sched_poll(p);
 	sched_ops->proc_detach(p);
+#endif  /* NO_SCHED */
 	nr_guaranteed -= p->sched_cfg.guaranteed_cores;
 }
 
@@ -961,6 +1002,10 @@ int sched_init(void)
 	bool valid = true;
 
 	bitmap_init(sched_allowed_cores, cpu_count, false);
+
+#ifdef NO_SCHED
+	bitmap_init(allocated_cores, NCPU, false);
+#endif  /* NO_SCHED */
 
 	/*
 	 * first pass: scan and log CPUs

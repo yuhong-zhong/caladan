@@ -536,6 +536,10 @@ extern uint64_t cfg_ht_punish_us;
 extern uint64_t cfg_qdelay_us;
 extern uint64_t cfg_quantum_us;
 
+#ifdef NO_SCHED
+DECLARE_BITMAP(rt_cores, NCPU);
+#endif
+
 extern void kthread_park(void);
 extern void kthread_park_now(void);
 extern void kthread_wait_to_attach(void);
@@ -779,6 +783,7 @@ struct directpath_spec;
 extern int mlx5_init_ext_late(struct directpath_spec *spec, int bar_fd, int mem_fd);
 
 /* configuration loading */
+extern int cfg_early_load(const char *path);
 extern int cfg_load(const char *path);
 
 /* internal runtime scheduling functions */

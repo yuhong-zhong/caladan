@@ -14,3 +14,5 @@ CONFIG_OPTIMIZE=n
 CONFIG_DIRECTPATH=n
 # Build with clang instead of gcc
 CONFIG_CLANG=n
+# Disable scheduler
+CONFIG_NO_SCHED=y

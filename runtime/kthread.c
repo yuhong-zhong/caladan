@@ -42,6 +42,10 @@ struct cpu_record cpu_map[NCPU] __attribute__((aligned(CACHE_LINE_SIZE)));
 /* the file descriptor for the ksched module */
 int ksched_fd;
 
+#ifdef NO_SCHED
+DEFINE_BITMAP(rt_cores, NCPU);
+#endif
+
 static struct kthread *allock(void)
 {
 	struct kthread *k;

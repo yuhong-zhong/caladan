@@ -34,7 +34,7 @@
 #define LRPC_QUEUE_SIZE_DIRECTPATH 16
 
 
-const char *rt_cxl_path = "/dev/dax2.0";
+const char *rt_cxl_path = NULL;
 
 static size_t lrpc_q_size(void)
 {
@@ -427,6 +427,7 @@ int ioqueues_register_iokernel(void)
 	// struct sockaddr_un addr;
 	uint64_t status_code = 0;
 	int ret;
+	int i;
 
 	/* initialize control header */
 	hdr = iok.hdr;
@@ -449,6 +450,9 @@ int ioqueues_register_iokernel(void)
 	hdr->sched_cfg.guaranteed_cores = guaranteedks;
 	hdr->sched_cfg.preferred_socket = preferred_socket;
 	hdr->sched_cfg.quantum_us = cfg_quantum_us;
+	bitmap_init(hdr->sched_cfg.rt_cores, NCPU, false);
+	bitmap_for_each_set(rt_cores, NCPU, i)
+		bitmap_set(hdr->sched_cfg.rt_cores, i);
 	hdr->thread_specs = ptr_to_shmptr(r, iok.threads, sizeof(*iok.threads) * maxks);
 
 	// CXL-TODO: add clflush

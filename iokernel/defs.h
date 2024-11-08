@@ -465,6 +465,7 @@ extern void *cxl_alloc_client(uint64_t *out_cxl_offset);
 extern void cxl_free_client(void *ptr);
 
 uint64_t virt_addr_to_phys_addr(uint64_t virtual_addr);
+void batch_clflush(void *addr, uint64_t len);
 
 /*
  * dataplane RX/TX functions

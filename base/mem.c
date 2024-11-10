@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/mman.h>
+#include <x86intrin.h>
 
 #include <base/stddef.h>
 #include <base/mem.h>
@@ -28,6 +29,28 @@
 #endif
 
 bool cfg_transparent_hugepages_enabled;
+
+#ifdef NO_CACHE_COHERENCE
+void batch_clflushopt(const void *addr, uint64_t len)
+{
+        uint8_t *ptr = (uint8_t *) (ROUND_DOWN((uint64_t) addr, CACHE_LINE_SIZE));
+        uint64_t num_lines = ((((uint64_t) addr) - ((uint64_t) ptr)) + len + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
+        for (uint64_t i = 0; i < num_lines; ++i) {
+                asm volatile("clflushopt %0" : "+m" (*(volatile char *)(ptr + i * CACHE_LINE_SIZE)));
+        }
+        _mm_sfence();
+}
+
+void batch_clwb(const void *addr, uint64_t len)
+{
+        uint8_t *ptr = (uint8_t *) (ROUND_DOWN((uint64_t) addr, CACHE_LINE_SIZE));
+        uint64_t num_lines = ((((uint64_t) addr) - ((uint64_t) ptr)) + len + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE;
+        for (uint64_t i = 0; i < num_lines; ++i) {
+                asm volatile("clwb %0" : "+m" (*(volatile char *)(ptr + i * CACHE_LINE_SIZE)));
+        }
+        _mm_sfence();
+}
+#endif
 
 /* libc conflicts with linux/shm.h, so define these ourselves */
 void* shmat(int shm_id, const void *addr, int flags);

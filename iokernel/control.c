@@ -182,9 +182,10 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 	reg.base = shbuf;
 	reg.len = len;
 
-	// CXL-TODO: add clflush
-
 	/* parse the control header */
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(shbuf, sizeof(hdr));
+#endif
 	memcpy(&hdr, (struct control_hdr *)shbuf, sizeof(hdr)); /* TOCTOU */
 	if (hdr.magic != CONTROL_HDR_MAGIC ||
 		  hdr.version_no != CONTROL_HDR_VERSION) {
@@ -196,6 +197,9 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 		goto fail;
 
 	/* copy arrays of threads, timers, and hwq specs */
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(shbuf + hdr.thread_specs, sizeof(*threads) * hdr.thread_count);
+#endif
 	threads = copy_shm_data(&reg, hdr.thread_specs, hdr.thread_count * sizeof(*threads));
 	if (!threads)
 		goto fail;
@@ -220,6 +224,9 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 					   sizeof(*p->runtime_info));
 	if (!p->runtime_info)
 		goto fail;
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(p->runtime_info, sizeof(*p->runtime_info));
+#endif
 	memset(&p->runtime_info->congestion, 0, sizeof(p->runtime_info->congestion));
 	if (hdr.request_directpath_queues != DIRECTPATH_REQUEST_NONE) {
 		p->has_vfio_directpath = p->has_directpath = true;
@@ -354,8 +361,10 @@ static void control_add_client(void)
 	client_shm_buf = cxl_alloc_client(&client_cxl_offset);
 	RT_BUG_ON(!client_shm_buf);
 
-	// CXL-TODO: use nt store
 	*((struct iokernel_info *) client_shm_buf) = *iok_info;
+#ifdef NO_CACHE_COHERENCE
+	batch_clwb(client_shm_buf, sizeof(struct iokernel_info));
+#endif
 
 	ret = write(fd, &client_cxl_offset, sizeof(client_cxl_offset));
 	if (ret != sizeof(client_cxl_offset)) {

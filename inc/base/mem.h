@@ -57,6 +57,14 @@ extern int mem_lookup_page_phys_addrs(void *addr, size_t len, size_t pgsize,
 				      physaddr_t *maddrs);
 extern void touch_mapping(void *base, size_t len, size_t pgsize);
 
+#define ROUND_DOWN(a, b) ((a) / (b) * (b))
+#define ROUND_UP(a, b) (((a) + (b) - 1) / (b) * (b))
+
+#ifdef NO_CACHE_COHERENCE
+void batch_clflushopt(const void *addr, uint64_t len);
+void batch_clwb(const void *addr, uint64_t len);
+#endif
+
 static inline int
 mem_lookup_page_phys_addr(void *addr, size_t pgsize, physaddr_t *paddr)
 {

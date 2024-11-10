@@ -152,8 +152,10 @@ static void sched_steer_flows(struct proc *p)
 static void sched_enable_kthread(struct proc *p, struct thread *th, unsigned int core)
 {
 	ACCESS_ONCE(th->q_ptrs->curr_grant_gen) = ++th->wake_gen;
+#ifndef NO_SCHED
 	thread_enable_sched_poll(th);
 	proc_enable_sched_poll(p);
+#endif
 	th->change_tsc = cur_tsc;
 	th->active = true;
 	th->core = core;

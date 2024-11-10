@@ -395,6 +395,9 @@ static int net_tx_iokernel(struct mbuf *m)
 	hdr->len = len;
 	hdr->olflags = m->txflags;
 	shmptr_t shm = ptr_to_shmptr(&netcfg.tx_region, hdr, len + sizeof(*hdr));
+#ifdef NO_CACHE_COHERENCE
+	batch_clwb(hdr, len + sizeof(*hdr));
+#endif
 
 	if (unlikely(!lrpc_send(&k->txpktq, TXPKT_NET_XMIT, shm))) {
 		mbuf_pull_hdr(m, *hdr);

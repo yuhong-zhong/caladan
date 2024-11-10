@@ -480,21 +480,33 @@ static __always_inline __nofp void putk(void)
 /* preempt_cede_needed - check if kthread should cede */
 static __always_inline __nofp bool preempt_cede_needed(struct kthread *k)
 {
+#ifdef NO_SCHED
+	return false;
+#else
 	return k->q_ptrs->curr_grant_gen ==
 	       ACCESS_ONCE(k->q_ptrs->cede_gen);
+#endif
 }
 
 /* preempt_yield_needed - check if current uthread should yield */
 static __always_inline __nofp bool preempt_yield_needed(struct kthread *k)
 {
+#ifdef NO_SCHED
+	return false;
+#else
         return ACCESS_ONCE(k->q_ptrs->yield_rcu_gen) == k->rcu_gen;
+#endif
 }
 
 /* preempt_park_needed - check if kthread should park itself */
 static __always_inline __nofp bool preempt_park_needed(struct kthread *k)
 {
+#ifdef NO_SCHED
+	return false;
+#else
 	return k->q_ptrs->curr_grant_gen ==
 	       ACCESS_ONCE(k->q_ptrs->park_gen);
+#endif
 }
 
 #ifdef DIRECT_STORAGE

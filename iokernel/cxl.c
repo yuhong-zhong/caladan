@@ -6,7 +6,6 @@
 #include <base/assert.h>
 #include <base/log.h>
 #include <iokernel/shm.h>
-#include <x86intrin.h>
 #include "defs.h"
 
 #define LIKELY(x) (__builtin_expect((x), 1))
@@ -86,7 +85,7 @@ void cxl_free_client(void *ptr)
         int i = (int) (((uint64_t) ptr - (uint64_t) client_buf_base) / CXL_CLIENT_SIZE);
         RT_BUG_ON(i < 0 || i >= IOKERNEL_MAX_PROC);
 
-        log_info("cxl: freeing shared memory for a client");
+        log_info("cxl: freeing shared memory for a client allocated at index %d", i);
 
         spin_lock(&lock);
         RT_BUG_ON(bitmap_test(free_client_slots, i));
@@ -130,18 +129,6 @@ uint64_t virt_addr_to_phys_addr(uint64_t virtual_addr) {
 	return physical_addr;
 }
 
-void batch_clflush(void *addr, uint64_t len)
-{
-        RT_BUG_ON((uint64_t) addr % CACHE_LINE_SIZE != 0);
-        RT_BUG_ON(len % CACHE_LINE_SIZE != 0);
-
-        uint8_t *ptr = (uint8_t *) addr;
-        for (uint64_t i = 0; i < len / CACHE_LINE_SIZE; ++i) {
-                _mm_clflush(ptr + i * CACHE_LINE_SIZE);
-        }
-        _mm_mfence();
-}
-
 int cxl_init(void)
 {
         int fd;
@@ -160,6 +147,9 @@ int cxl_init(void)
         RT_BUG_ON(cxl_buf == MAP_FAILED);
         RT_BUG_ON((uint64_t) cxl_buf % PGSIZE_2MB != 0);
         memset(cxl_buf, 0, iok_cxl_size);
+#ifdef NO_CACHE_COHERENCE
+        batch_clwb(cxl_buf, iok_cxl_size);
+#endif
         close(fd);
 
         spin_lock_init(&lock);

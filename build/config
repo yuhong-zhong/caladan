@@ -16,3 +16,5 @@ CONFIG_DIRECTPATH=n
 CONFIG_CLANG=n
 # Disable scheduler
 CONFIG_NO_SCHED=y
+# Assume no cache coherency in shared memory
+CONFIG_NO_CACHE_COHERENCE=y

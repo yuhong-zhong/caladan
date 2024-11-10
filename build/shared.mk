@@ -68,9 +68,27 @@ $(error mlx4 support is not available currently)
 FLAGS += -DMLX4
 endif
 endif
+
 ifeq ($(CONFIG_NO_SCHED),y)
-FLAGS += -DNO_SCHED
+	ifeq ($(CONFIG_DIRECTPATH),y)
+	$(error NO_SCHED does not support DIRECTPATH)
+	endif
+
+	FLAGS += -DNO_SCHED
 endif
+
+ifeq ($(CONFIG_NO_CACHE_COHERENCE),y)
+	ifeq ($(CONFIG_NO_SCHED),n)
+	$(error NO_CACHE_COHERENCE requires NO_SCHED)
+	endif
+
+	ifeq ($(CONFIG_DIRECTPATH),y)
+	$(error NO_CACHE_COHERENCE does not support DIRECTPATH)
+	endif
+
+	FLAGS += -DNO_CACHE_COHERENCE
+endif
+
 ifeq ($(CONFIG_SPDK),y)
 FLAGS += -DDIRECT_STORAGE
 RUNTIME_LIBS += $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" pkg-config --libs --static libdpdk)

@@ -258,10 +258,11 @@ int ioqueues_init_early(void)
 	close(fd);
 	iok.cxl_shm_len = cxl_shm_len;
 
-	// CXL-TODO: clflush
-
 	iok.iok_info = (struct iokernel_info *) iok.cxl_shm_buf;
 	RT_BUG_ON(iok.iok_info->magic_number != 0xbeef);
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(iok.iok_info, sizeof(*iok.iok_info));
+#endif
 	memcpy(&netcfg.mac, &iok.iok_info->host_mac, sizeof(netcfg.mac));
 
 #ifdef DIRECTPATH
@@ -318,8 +319,6 @@ int ioqueues_init(void)
 		netcfg.rx_region.base = mmap(NULL, INGRESS_MBUF_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, iok.iok_info->rx_cxl_shm_offset);
 		RT_BUG_ON(netcfg.rx_region.base == MAP_FAILED);
 		close(fd);
-		// CXL-TODO: hugepage
-
 		// netcfg.rx_region.base =
 		//     mem_map_shm_rdonly(INGRESS_MBUF_SHM_KEY, NULL, INGRESS_MBUF_SHM_SIZE,
 		// 		PGSIZE_4KB);
@@ -454,8 +453,10 @@ int ioqueues_register_iokernel(void)
 	bitmap_for_each_set(rt_cores, NCPU, i)
 		bitmap_set(hdr->sched_cfg.rt_cores, i);
 	hdr->thread_specs = ptr_to_shmptr(r, iok.threads, sizeof(*iok.threads) * maxks);
-
-	// CXL-TODO: add clflush
+#ifdef NO_CACHE_COHERENCE
+	batch_clwb(hdr, sizeof(*hdr));
+	batch_clwb(iok.threads, sizeof(*iok.threads) * maxks);
+#endif
 
 	// // Make sure it's an abstract namespace path.
 	// assert(CONTROL_SOCK_PATH[0] == '\0');

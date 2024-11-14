@@ -29,7 +29,7 @@ static void dp_clients_add_client(struct proc *p)
 {
 	int ret;
 
-	if (!sched_attach_proc(p)) {
+	if (p->is_remote || !sched_attach_proc(p)) {
 		p->kill = false;
 		p->dp_clients_idx = dp.nr_clients;
 		dp.clients[dp.nr_clients++] = p;
@@ -86,6 +86,7 @@ void proc_release(struct ref *r)
 	ssize_t ret;
 
 	struct proc *p = container_of(r, struct proc, ref);
+	log_info("proc_release: releasing proc %d", p->pid);
 	if (!lrpc_send(&lrpc_data_to_control, CONTROL_PLANE_REMOVE_CLIENT,
 			(unsigned long) p))
 		log_err("dp_clients: failed to inform control of client removal");
@@ -133,7 +134,8 @@ static void dp_clients_remove_client(struct proc *p)
 	p->kill = true;
 	if (p->has_vfio_directpath)
 		directpath_dataplane_notify_kill(p);
-	sched_detach_proc(p);
+	if (!p->is_remote)
+		sched_detach_proc(p);
 	proc_put(p);
 }
 
@@ -175,20 +177,22 @@ int dp_clients_init(void)
 	int ret;
 	struct rte_hash_parameters hash_params = { 0 };
 
-	ret = lrpc_init_in(&lrpc_control_to_data,
+	if (!cfg.is_secondary) {
+		ret = lrpc_init_in(&lrpc_control_to_data,
 			lrpc_control_to_data_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
 			lrpc_control_to_data_params.wb);
-	if (ret < 0) {
-		log_err("dp_clients: initializing LRPC from control plane failed");
-		return -1;
-	}
+		if (ret < 0) {
+			log_err("dp_clients: initializing LRPC from control plane failed");
+			return -1;
+		}
 
-	ret = lrpc_init_out(&lrpc_data_to_control,
-			lrpc_data_to_control_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
-			lrpc_data_to_control_params.wb);
-	if (ret < 0) {
-		log_err("dp_clients: initializing LRPC to control plane failed");
-		return -1;
+		ret = lrpc_init_out(&lrpc_data_to_control,
+				lrpc_data_to_control_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
+				lrpc_data_to_control_params.wb);
+		if (ret < 0) {
+			log_err("dp_clients: initializing LRPC to control plane failed");
+			return -1;
+		}
 	}
 
 	dp.nr_clients = 0;

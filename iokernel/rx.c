@@ -80,11 +80,28 @@ bool rx_send_to_runtime(struct proc *p, uint32_t hash, uint64_t cmd,
 	return lrpc_send(&th->rxq, cmd, payload);
 }
 
+static bool rx_send_to_seciok(struct proc *p, uint64_t cmd, unsigned long payload)
+{
+	struct lrpc_chan_out *chan = &iok_as_primary_rxq[p->seciok_index];
+	if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(cmd, p->ip_addr), payload))) {
+		log_err_ratelimited("rx: failed to send to secondary iokernel");
+		return false;
+	}
+	return true;
+}
+
+static bool rx_send_pkt_to_seciok(struct proc *p, uint64_t cmd, struct rx_net_hdr *hdr)
+{
+	shmptr_t shmptr;
+	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, hdr, sizeof(*hdr));
+	return rx_send_to_seciok(p, cmd, shmptr);
+}
 
 static bool rx_send_pkt_to_runtime(struct proc *p, struct rx_net_hdr *hdr)
 {
 	shmptr_t shmptr;
 
+	RT_BUG_ON(unlikely(p->is_remote));
 	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, hdr, sizeof(*hdr));
 	return rx_send_to_runtime(p, hdr->rss_hash, RX_NET_RECV, shmptr);
 }
@@ -184,6 +201,15 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 	}
 
 	net_hdr = rx_prepend_rx_preamble(buf);
+
+	if (p->is_remote) {
+		if (!rx_send_pkt_to_seciok(p, RX_NET_RECV, net_hdr)) {
+			STAT_INC(RX_UNICAST_FAIL, 1);
+			goto fail_free;
+		}
+		return;
+	}
+
 	if (!rx_send_pkt_to_runtime(p, net_hdr)) {
 		STAT_INC(RX_UNICAST_FAIL, 1);
 		goto fail_free;
@@ -206,6 +232,42 @@ fail_free:
 	STAT_INC(RX_UNHANDLED, 1);
 }
 
+static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
+{
+	int i;
+	uint64_t cmd, raw_cmd;
+	uint32_t ip_addr;
+	unsigned long payload;
+	shmptr_t shmptr;
+	struct rx_net_hdr *hdr;
+	bool success;
+	struct proc *p;
+	int ret;
+
+	for (i = 0; i < n; i++) {
+		if (!lrpc_recv(chan, &cmd, &payload))
+			break;
+
+		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
+		ip_addr = IOK2IOK_GET_IP(cmd);
+
+		RT_BUG_ON(raw_cmd != RX_NET_RECV);
+		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
+		RT_BUG_ON(ret < 0);
+
+		shmptr = (shmptr_t) payload;
+		hdr = shmptr_to_ptr(&dp.ingress_mbuf_region, shmptr, sizeof(*hdr));
+
+		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
+		RT_BUG_ON(ret < 0);
+
+		success = rx_send_pkt_to_runtime(p, hdr);
+		RT_BUG_ON(!success);
+	}
+
+	return i;
+}
+
 /*
  * Process a batch of incoming packets.
  */
@@ -213,6 +275,13 @@ bool rx_burst(void)
 {
 	struct rte_mbuf *bufs[IOKERNEL_RX_BURST_SIZE];
 	uint16_t nb_rx, i;
+
+	if (cfg.is_secondary) {
+		nb_rx = rx_burst_from_pmyiok(&iok_as_secondary_rxq[cfg.seciok_index],
+					     IOKERNEL_RX_BURST_SIZE);
+		STAT_INC(RX_PULLED, nb_rx);
+		return nb_rx > 0;
+	}
 
 	/* retrieve packets from NIC queue */
 	nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE);
@@ -335,6 +404,9 @@ fail:
  */
 int rx_init()
 {
+	if (cfg.is_secondary)
+		return 0;
+
 	if (cfg.vfio_directpath)
 		return 0;
 

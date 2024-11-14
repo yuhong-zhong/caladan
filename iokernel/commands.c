@@ -10,7 +10,7 @@
 
 #include "defs.h"
 
-static int commands_drain_queue(struct thread *t, struct rte_mbuf **bufs, int n)
+static int commands_drain_queue(struct thread *t, unsigned long *bufs, int n)
 {
 	int i, n_bufs = 0;
 
@@ -23,7 +23,7 @@ static int commands_drain_queue(struct thread *t, struct rte_mbuf **bufs, int n)
 
 		switch (cmd) {
 		case TXCMD_NET_COMPLETE:
-			bufs[n_bufs++] = (struct rte_mbuf *)payload;
+			bufs[n_bufs++] = payload;
 			/* TODO: validate pointer @buf */
 			break;
 
@@ -36,12 +36,45 @@ static int commands_drain_queue(struct thread *t, struct rte_mbuf **bufs, int n)
 	return n_bufs;
 }
 
+static int commands_drain_queue_from_seciok(struct lrpc_chan_in *chan, unsigned long *bufs, int n)
+{
+	int i, n_bufs = 0;
+
+	for (i = 0; i < n; i++) {
+		uint64_t cmd, raw_cmd;
+		// uint32_t ip_addr;
+		unsigned long payload;
+
+		if (!lrpc_recv(chan, &cmd, &payload))
+			break;
+
+		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
+		// ip_addr = IOK2IOK_GET_IP(cmd);
+
+		RT_BUG_ON(raw_cmd != TXCMD_NET_COMPLETE);
+		bufs[n_bufs++] = payload;
+	}
+
+	return n_bufs;
+}
+
+static void commands_send_to_pmyiok(struct lrpc_chan_out *chan, unsigned long *bufs, int n)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		if (!lrpc_send(chan, IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0), bufs[i])) {
+			log_err_ratelimited("commands_send_to_pmyiok: failed to send to primary iokernel");
+		}
+	}
+}
+
 /*
  * Process a batch of commands from runtimes.
  */
 bool commands_rx(void)
 {
-	struct rte_mbuf *bufs[IOKERNEL_CMD_BURST_SIZE];
+	unsigned long bufs[IOKERNEL_CMD_BURST_SIZE];
 	int i, n_bufs = 0;
 	static unsigned int pos = 0;
 
@@ -57,11 +90,23 @@ bool commands_rx(void)
 		n_bufs += commands_drain_queue(ts[idx], &bufs[n_bufs],
 				IOKERNEL_CMD_BURST_SIZE - n_bufs);
 	}
+	if (!cfg.is_secondary) {
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			if (n_bufs >= IOKERNEL_CMD_BURST_SIZE)
+				break;
+			n_bufs += commands_drain_queue_from_seciok(&iok_as_primary_txcmdq[i],
+					&bufs[n_bufs], IOKERNEL_CMD_BURST_SIZE - n_bufs);
+		}
+	}
 
 	STAT_INC(COMMANDS_PULLED, n_bufs);
 
 	pos++;
-	for (i = 0; i < n_bufs; i++)
-		rte_pktmbuf_free(bufs[i]);
+	if (cfg.is_secondary) {
+		commands_send_to_pmyiok(&iok_as_secondary_txcmdq[cfg.seciok_index], bufs, n_bufs);
+	} else {
+		for (i = 0; i < n_bufs; i++)
+			rte_pktmbuf_free((struct rte_mbuf *) bufs[i]);
+	}
 	return n_bufs > 0;
 }

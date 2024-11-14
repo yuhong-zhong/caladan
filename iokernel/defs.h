@@ -34,6 +34,9 @@ struct iokernel_cfg {
 	bool	directpath_active_rss; /* vfio directpath: keep all qs active */
 	bool	azure_arp_mode; /* support Azure by responding to local ARP messages */
 	bool    no_hugepages; /* disable use of reserved hugepages for directpath */
+	int	socket_index;
+	bool	is_secondary;
+	int	seciok_index;
 };
 
 extern struct iokernel_cfg cfg;
@@ -172,6 +175,7 @@ struct proc {
 	unsigned int		removed:1;
 	unsigned int		started:1;
 	unsigned int		has_storage:1;
+	unsigned int		is_remote:1;
 	unsigned long		policy_data;
 	unsigned long		directpath_data;
 	uint64_t		next_poll_tsc;
@@ -213,7 +217,10 @@ struct proc {
 	uint16_t		flow_tbl[NCPU];
 	struct thread		*active_threads[NCPU];
 	int				control_fd;
+	int			lrpc_control_fd;
 	pid_t			pid;
+
+	int			seciok_index;
 
 	/* table of physical addresses for shared memory */
 	physaddr_t		page_paddrs[];
@@ -460,6 +467,7 @@ extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cx
 #define CXL_CLIENT_SIZE (1UL << 30UL)
 extern void *cxl_alloc_client(uint64_t *out_cxl_offset);
 extern void cxl_free_client(void *ptr);
+void *cxl_get_client(uint64_t cxl_offset);
 
 uint64_t virt_addr_to_phys_addr(uint64_t virtual_addr);
 

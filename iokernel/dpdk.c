@@ -224,9 +224,10 @@ int dpdk_init(void)
 {
 	unsigned int max_args;
 	char buf[10], **argv;
+	char file_prefix[10];
 	int i, ret, argc = 0;
 
-	max_args = 7 + dpdk_argc;
+	max_args = 9 + dpdk_argc;
 	argv = malloc(max_args * sizeof(char *));
 	if (!argv)
 		return -ENOMEM;
@@ -260,8 +261,13 @@ int dpdk_init(void)
 		ARGV("--allow");
 		ARGV(nic_pci_addr_str);
 	} else {
-		ARGV("--vdev=net_tap0");
+		// ARGV("--vdev=net_tap0");
 	}
+
+	// enable multiple iokernels on the same host
+	sprintf(file_prefix, "%d", cfg.socket_index);
+	ARGV("--file-prefix");
+	ARGV(file_prefix);
 
 	/* include any user-supplied arguments */
 	for (i = 0; i < dpdk_argc; i++)
@@ -294,6 +300,8 @@ int dpdk_init(void)
  */
 int dpdk_late_init(void)
 {
+	if (cfg.is_secondary)
+		return 0;
 
 	if (cfg.vfio_directpath)
 		return 0;

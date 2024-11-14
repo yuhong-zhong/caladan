@@ -35,6 +35,7 @@
 
 
 const char *rt_cxl_path = NULL;
+int iok_socket_index = 0;
 
 static size_t lrpc_q_size(void)
 {
@@ -209,11 +210,16 @@ int ioqueues_init_early(void)
 	int fd;
 
 	// Make sure it's an abstract namespace path.
-	assert(CONTROL_SOCK_PATH[0] == '\0');
+	assert(CONTROL_SOCK_PATH_PREFIX[0] == '\0');
 
-	BUILD_ASSERT(sizeof(CONTROL_SOCK_PATH) <= sizeof(addr.sun_path));
+	BUILD_ASSERT(sizeof(CONTROL_SOCK_PATH_PREFIX) <= sizeof(addr.sun_path));
 	addr.sun_family = AF_UNIX;
-	memcpy(addr.sun_path, CONTROL_SOCK_PATH, sizeof(CONTROL_SOCK_PATH));
+	memcpy(addr.sun_path, CONTROL_SOCK_PATH_PREFIX, sizeof(CONTROL_SOCK_PATH_PREFIX));
+	snprintf(addr.sun_path + sizeof(CONTROL_SOCK_PATH_PREFIX) - 1,
+		 sizeof(addr.sun_path) - sizeof(CONTROL_SOCK_PATH_PREFIX) - 1,
+		 "%d", iok_socket_index);
+
+	log_info("ioqueues_init_early: using socket path %s", addr.sun_path + 1);
 
 	iok.fd = socket(AF_UNIX, SOCK_STREAM, 0);
 	if (iok.fd == -1) {
@@ -222,7 +228,7 @@ int ioqueues_init_early(void)
 	}
 
 	if (connect(iok.fd, (struct sockaddr *)&addr,
-		 sizeof(addr.sun_family) + sizeof(CONTROL_SOCK_PATH)) == -1) {
+		    sizeof(addr.sun_family) + strlen(addr.sun_path + 1) + 2) == -1) {
 		log_err("ioqueues_init_early: connect() failed [%s]", strerror(errno));
 		RT_BUG_ON(true);
 	}
@@ -424,9 +430,11 @@ int ioqueues_register_iokernel(void)
 	struct control_hdr *hdr;
 	struct shm_region *r = &netcfg.tx_region;
 	// struct sockaddr_un addr;
-	uint64_t status_code = 0;
+	uint64_t status_code = IOK_REGISTER_OK;
 	int ret;
+#ifdef NO_SCHED
 	int i;
+#endif
 
 	/* initialize control header */
 	hdr = iok.hdr;
@@ -449,9 +457,11 @@ int ioqueues_register_iokernel(void)
 	hdr->sched_cfg.guaranteed_cores = guaranteedks;
 	hdr->sched_cfg.preferred_socket = preferred_socket;
 	hdr->sched_cfg.quantum_us = cfg_quantum_us;
+#ifdef NO_SCHED
 	bitmap_init(hdr->sched_cfg.rt_cores, NCPU, false);
 	bitmap_for_each_set(rt_cores, NCPU, i)
 		bitmap_set(hdr->sched_cfg.rt_cores, i);
+#endif
 	hdr->thread_specs = ptr_to_shmptr(r, iok.threads, sizeof(*iok.threads) * maxks);
 #ifdef NO_CACHE_COHERENCE
 	batch_clwb(hdr, sizeof(*hdr));

@@ -18,6 +18,8 @@ struct lrpc_msg {
 	unsigned long	payload;
 };
 
+BUILD_ASSERT(CACHE_LINE_SIZE % sizeof(struct lrpc_msg) == 0);
+
 #define LRPC_DONE_PARITY	(1UL << 63)
 #define LRPC_CMD_MASK		(~LRPC_DONE_PARITY)
 
@@ -59,13 +61,7 @@ static inline bool lrpc_send(struct lrpc_chan_out *chan, uint64_t cmd,
 	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
 	cmd |= (chan->send_head++ & chan->size) ? 0 : LRPC_DONE_PARITY;
 	dst->payload = payload;
-#ifdef NO_CACHE_COHERENCE
-	batch_clwb(dst, sizeof(*dst));
-#endif
 	store_release(&dst->cmd, cmd);
-#ifdef NO_CACHE_COHERENCE
-	batch_clwb(dst, sizeof(*dst));
-#endif
 	return true;
 }
 
@@ -141,9 +137,6 @@ static inline bool lrpc_recv(struct lrpc_chan_in *chan, uint64_t *cmd_out,
 			  0 : LRPC_DONE_PARITY;
 	uint64_t cmd;
 
-#ifdef NO_CACHE_COHERENCE
-	batch_clflushopt(m, sizeof(*m));
-#endif
 	cmd = load_acquire(&m->cmd);
         if ((cmd & LRPC_DONE_PARITY) != parity)
 		return false;
@@ -152,9 +145,6 @@ static inline bool lrpc_recv(struct lrpc_chan_in *chan, uint64_t *cmd_out,
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
 	store_release(chan->recv_head_wb, chan->recv_head);
-#ifdef NO_CACHE_COHERENCE
-	batch_clwb(chan->recv_head_wb, sizeof(*chan->recv_head_wb));
-#endif
 	return true;
 }
 
@@ -167,9 +157,6 @@ static inline bool lrpc_empty(struct lrpc_chan_in *chan)
 	struct lrpc_msg *m = &chan->tbl[chan->recv_head & (chan->size - 1)];
 	uint64_t parity = (chan->recv_head & chan->size) ?
 			  0 : LRPC_DONE_PARITY;
-#ifdef NO_CACHE_COHERENCE
-	batch_clflushopt(m, sizeof(*m));
-#endif
 	return (ACCESS_ONCE(m->cmd) & LRPC_DONE_PARITY) != parity;
 }
 

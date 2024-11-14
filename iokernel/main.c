@@ -128,14 +128,16 @@ void dataplane_loop(void)
 	 * Check that the port is on the same NUMA node as the polling thread
 	 * for best performance.
 	 */
-	if (rte_eth_dev_socket_id(dp.port) > 0
-			&& rte_eth_dev_socket_id(dp.port) != (int) rte_socket_id())
-		log_warn("main: port %u is on remote NUMA node to polling thread.\n\t"
-				"Performance will not be optimal.", dp.port);
+	if (!cfg.is_secondary) {
+		if (rte_eth_dev_socket_id(dp.port) > 0
+				&& rte_eth_dev_socket_id(dp.port) != (int) rte_socket_id())
+			log_warn("main: port %u is on remote NUMA node to polling thread.\n\t"
+					"Performance will not be optimal.", dp.port);
 
-	log_info("main: core %u running dataplane. [Ctrl+C to quit]",
-			rte_lcore_id());
-	fflush(stdout);
+		log_info("main: core %u running dataplane. [Ctrl+C to quit]",
+				rte_lcore_id());
+		fflush(stdout);
+	}
 
 	/* run until quit or killed */
 	for (;;) {
@@ -157,7 +159,7 @@ void dataplane_loop(void)
 		work_done |= commands_rx();
 
 		/* handle control messages */
-		if (!work_done)
+		if (!cfg.is_secondary && !work_done)
 			dp_clients_rx_control_lrpcs();
 
 		STAT_INC(LOOPS, 1);
@@ -272,6 +274,14 @@ int main(int argc, char *argv[])
 			iok_cxl_path = argv[++i];
 		} else if (!strcmp(argv[i], "iok_cxl_size")) {
 			iok_cxl_size = (uint64_t) atoll(argv[++i]);
+		} else if (!strcmp(argv[i], "socket_index")) {
+			cfg.socket_index = atoi(argv[++i]);
+			RT_BUG_ON(cfg.socket_index < 0);
+		} else if (!strcmp(argv[i], "is_secondary")) {
+			cfg.is_secondary = true;
+		} else if (!strcmp(argv[i], "seciok_index")) {
+			cfg.seciok_index = atoi(argv[++i]);
+			RT_BUG_ON(cfg.seciok_index < 0);
 		} else if (!strcmp(argv[i], "noidlefastwake")) {
 			cfg.noidlefastwake = true;
 		} else if (!strcmp(argv[i], "dpactiverss")) {
@@ -303,7 +313,7 @@ int main(int argc, char *argv[])
 		cfg.azure_arp_mode = true;
 	}
 
-	pthread_barrier_init(&init_barrier, NULL, 2);
+	pthread_barrier_init(&init_barrier, NULL, 2 + (cfg.is_secondary ? 0 : 1));
 
 	ret = run_init_handlers("iokernel", iok_init_handlers,
 			ARRAY_SIZE(iok_init_handlers));

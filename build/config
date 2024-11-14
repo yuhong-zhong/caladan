@@ -15,6 +15,6 @@ CONFIG_DIRECTPATH=n
 # Build with clang instead of gcc
 CONFIG_CLANG=n
 # Disable scheduler
-CONFIG_NO_SCHED=y
+CONFIG_NO_SCHED=n
 # Assume no cache coherency in shared memory
-CONFIG_NO_CACHE_COHERENCE=y
+CONFIG_NO_CACHE_COHERENCE=n

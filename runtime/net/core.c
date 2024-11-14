@@ -263,6 +263,7 @@ void net_rx_batch(struct mbuf **ms, unsigned int nr)
 static void iokernel_softirq_poll(struct kthread *k)
 {
 	struct rx_net_hdr *hdr;
+	struct tx_net_hdr *tx_hdr;
 	struct mbuf *m;
 	uint64_t cmd;
 	unsigned long payload;
@@ -285,7 +286,9 @@ static void iokernel_softirq_poll(struct kthread *k)
 			break;
 
 		case RX_NET_COMPLETE:
-			mbuf_free((struct mbuf *)payload);
+			tx_hdr = shmptr_to_ptr(&netcfg.tx_region, (shmptr_t) payload,
+					       sizeof(*tx_hdr));
+			mbuf_free((struct mbuf *) tx_hdr->mbuf);
 			break;
 
 		case RX_REFILL_BUFS:
@@ -391,10 +394,11 @@ static int net_tx_iokernel(struct mbuf *m)
 	assert_preempt_disabled();
 
 	hdr = mbuf_push_hdr(m, *hdr);
-	hdr->completion_data = (unsigned long)m;
 	hdr->len = len;
 	hdr->olflags = m->txflags;
 	shmptr_t shm = ptr_to_shmptr(&netcfg.tx_region, hdr, len + sizeof(*hdr));
+	hdr->completion_data = (unsigned long) shm;
+	hdr->mbuf = (void *) m;
 #ifdef NO_CACHE_COHERENCE
 	batch_clwb(hdr, len + sizeof(*hdr));
 #endif

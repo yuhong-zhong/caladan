@@ -12,6 +12,7 @@
 #include <base/pci.h>
 #include <iokernel/shm.h>
 #include <net/ethernet.h>
+#include <stdio.h>
 
 /*
  * WARNING: If you make any changes that impact the layout of
@@ -21,7 +22,59 @@
 #define CONTROL_HDR_VERSION 11
 
 /* The abstract namespace path for the control socket. */
-#define CONTROL_SOCK_PATH	"\0/control/iokernel.sock"
+// #define CONTROL_SOCK_PATH	"\0/control/iokernel.sock"
+#define CONTROL_SOCK_PATH_PREFIX	"\0/control/iokernel.sock"
+
+enum {
+	IOK_REGISTER_OK = 0,
+	IOK_REGISTER_SECONDARY,
+};
+
+/* IOK2IOK communication */
+
+#define IOK2IOK_QUEUE_SIZE	8192UL
+#define MAX_NR_IOK2IOK		1UL
+
+// All iok2iok QP head pointers must fit in a 2MB page
+BUILD_ASSERT(MAX_NR_IOK2IOK * 6 * sizeof(uint32_t) <= PGSIZE_2MB);
+// Each iok2iok QP buffer must fit in a 2MB page
+BUILD_ASSERT(IOK2IOK_QUEUE_SIZE * 6 * sizeof(struct lrpc_msg) <= PGSIZE_2MB);
+
+/* primary iokernel */
+extern struct lrpc_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK];
+
+extern struct lrpc_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK];
+
+/* secondary iokernel */
+extern struct lrpc_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK];
+
+extern struct lrpc_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK];
+extern struct lrpc_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK];
+
+enum {
+	IOK2IOK_CMD_ADD_CLIENT = 0,
+	IOK2IOK_CMD_CXL_OFFSET,
+	IOK2IOK_CMD_CXL_LEN,
+	IOK2IOK_CMD_STATUS_CODE,
+	IOK2IOK_CMD_LRPC_FD,
+	IOK2IOK_CMD_REMOVE_CLIENT,
+	IOK2IOK_CMD_NR,
+};
+
+#define IOK2IOK_CMD_BITS 4
+#define IOK2IOK_GET_RAWCMD(cmd) ((cmd) & ((1 << IOK2IOK_CMD_BITS) - 1))
+#define IOK2IOK_GET_IP(cmd) ((cmd) >> IOK2IOK_CMD_BITS)
+#define IOK2IOK_MAKE_CMD(cmd, ip) (((ip) << IOK2IOK_CMD_BITS) | (cmd))
+
+// Leave 1b for parity
+BUILD_ASSERT(IOK2IOK_CMD_BITS + 4 * 8 + 1 <= sizeof(uint64_t) * 8);
 
 /* describes a queue */
 struct q_ptrs {

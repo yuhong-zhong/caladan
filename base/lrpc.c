@@ -14,9 +14,6 @@ bool __lrpc_send(struct lrpc_chan_out *chan, uint64_t cmd,
 
 	assert(chan->send_head - chan->send_tail == chan->size);
 
-#ifdef NO_CACHE_COHERENCE
-	batch_clflushopt(chan->recv_head_wb, sizeof(*chan->recv_head_wb));
-#endif
 	chan->send_tail = load_acquire(chan->recv_head_wb);
         if (chan->send_head - chan->send_tail == chan->size)
                 return false;
@@ -24,14 +21,8 @@ bool __lrpc_send(struct lrpc_chan_out *chan, uint64_t cmd,
 	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
 	dst->payload = payload;
 
-#ifdef NO_CACHE_COHERENCE
-	batch_clwb(dst, sizeof(*dst));
-#endif
 	cmd |= (chan->send_head++ & chan->size) ? 0 : LRPC_DONE_PARITY;
 	store_release(&dst->cmd, cmd);
-#ifdef NO_CACHE_COHERENCE
-	batch_clwb(dst, sizeof(*dst));
-#endif
 	return true;
 }
 

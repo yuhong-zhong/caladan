@@ -234,6 +234,7 @@ stack_init_to_rsp_with_buf(struct stack *s, void **buf, size_t buf_len,
  */
 
 extern const char *rt_cxl_path;
+extern int iok_socket_index;
 
 struct iokernel_control {
 	int fd;

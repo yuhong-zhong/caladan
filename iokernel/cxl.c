@@ -24,12 +24,11 @@ bool after_early_alloc;
 uint8_t *client_buf_base;
 DEFINE_BITMAP(free_client_slots, IOKERNEL_MAX_PROC);
 
-extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset)
+void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset)
 {
         uint64_t offset;
         void *ptr;
 
-        RT_BUG_ON(size % alignment != 0);
         RT_BUG_ON(alignment == 0);
         RT_BUG_ON(after_early_alloc);
 
@@ -39,10 +38,12 @@ extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cx
         ptr = cxl_buf + early_allocated;
         offset = early_allocated;
         early_allocated += size;
+        early_allocated = ROUND_UP(early_allocated, alignment);
         RT_BUG_ON(early_allocated > iok_cxl_size);
         spin_unlock(&lock);
 
-        *out_cxl_offset = offset;
+        if (out_cxl_offset != NULL)
+                *out_cxl_offset = offset;
         return ptr;
 }
 
@@ -52,6 +53,7 @@ void *cxl_alloc_client(uint64_t *out_cxl_offset)
         int i;
 
         log_info("cxl: allocating shared memory for a new client");
+        RT_BUG_ON(unlikely(cfg.is_secondary));
 
         spin_lock(&lock);
 
@@ -76,7 +78,13 @@ void *cxl_alloc_client(uint64_t *out_cxl_offset)
 
         spin_unlock(&lock);
 
-        *out_cxl_offset = early_allocated + i * CXL_CLIENT_SIZE;
+        memset(client_buf_base + i * CXL_CLIENT_SIZE, 0, CXL_CLIENT_SIZE);
+#ifdef NO_CACHE_COHERENCE
+        batch_clwb(client_buf_base + i * CXL_CLIENT_SIZE, CXL_CLIENT_SIZE);
+#endif
+
+        if (out_cxl_offset != NULL)
+                *out_cxl_offset = early_allocated + i * CXL_CLIENT_SIZE;
         return client_buf_base + i * CXL_CLIENT_SIZE;
 }
 
@@ -84,6 +92,7 @@ void cxl_free_client(void *ptr)
 {
         int i = (int) (((uint64_t) ptr - (uint64_t) client_buf_base) / CXL_CLIENT_SIZE);
         RT_BUG_ON(i < 0 || i >= IOKERNEL_MAX_PROC);
+        RT_BUG_ON(unlikely(cfg.is_secondary));
 
         log_info("cxl: freeing shared memory for a client allocated at index %d", i);
 
@@ -129,6 +138,15 @@ uint64_t virt_addr_to_phys_addr(uint64_t virtual_addr) {
 	return physical_addr;
 }
 
+void *cxl_get_client(uint64_t cxl_offset)
+{
+        RT_BUG_ON(cxl_offset % PGSIZE_2MB != 0);
+        RT_BUG_ON(cxl_offset + CXL_CLIENT_SIZE >= iok_cxl_size);
+        RT_BUG_ON(unlikely(!cfg.is_secondary));
+
+        return cxl_buf + cxl_offset;
+}
+
 int cxl_init(void)
 {
         int fd;
@@ -146,10 +164,12 @@ int cxl_init(void)
         cxl_buf = (uint8_t *) mmap(NULL, iok_cxl_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         RT_BUG_ON(cxl_buf == MAP_FAILED);
         RT_BUG_ON((uint64_t) cxl_buf % PGSIZE_2MB != 0);
-        memset(cxl_buf, 0, iok_cxl_size);
+        if (!cfg.is_secondary) {
+                memset(cxl_buf, 0, iok_cxl_size);
 #ifdef NO_CACHE_COHERENCE
-        batch_clwb(cxl_buf, iok_cxl_size);
+                batch_clwb(cxl_buf, iok_cxl_size);
 #endif
+        }
         close(fd);
 
         spin_lock_init(&lock);

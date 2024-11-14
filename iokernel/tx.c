@@ -46,9 +46,8 @@ static inline struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf)
  */
 static void tx_prepare_tx_mbuf(struct rte_mbuf *buf,
 			       const struct tx_net_hdr *net_hdr,
-			       struct thread *th)
+			       struct thread *th, struct proc *p)
 {
-	struct proc *p = th->p;
 	uint32_t page_number;
 	struct tx_pktmbuf_priv *priv_data;
 
@@ -97,16 +96,9 @@ static void tx_prepare_tx_mbuf(struct rte_mbuf *buf,
 /*
  * Send a completion event to the runtime for the mbuf pointed to by obj.
  */
-bool tx_send_completion(void *obj)
+static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned long completion_data)
 {
-	struct rte_mbuf *buf;
-	struct tx_pktmbuf_priv *priv_data;
-	struct thread *th;
-	struct proc *p;
-
-	buf = (struct rte_mbuf *)obj;
-	priv_data = tx_pktmbuf_get_priv(buf);
-	p = priv_data->p;
+	struct lrpc_chan_out *chan;
 
 	/* during initialization, the mbufs are enqueued for the first time */
 	if (unlikely(!p))
@@ -118,16 +110,26 @@ bool tx_send_completion(void *obj)
 		return true; /* no need to send a completion */
 	}
 
+	if (p->is_remote) {
+		RT_BUG_ON(cfg.is_secondary);
+		chan = &iok_as_primary_rxcmdq[p->seciok_index];
+
+		if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->ip_addr), completion_data))) {
+			log_err_ratelimited("tx: failed to send completion to secondary iokernel");
+			return false;
+		}
+		goto success;
+	}
+
 	/* send completion to runtime */
-	th = priv_data->th;
 	if (th->active) {
 		if (likely(lrpc_send(&th->rxq, RX_NET_COMPLETE,
-			       priv_data->completion_data))) {
+				     completion_data))) {
 			goto success;
 		}
 	} else {
 		if (likely(rx_send_to_runtime(p, p->next_thread_rr++, RX_NET_COMPLETE,
-					priv_data->completion_data))) {
+					      completion_data))) {
 			goto success;
 		}
 	}
@@ -140,7 +142,7 @@ bool tx_send_completion(void *obj)
 	if (!p->nr_overflows)
 		list_add(&overflow_procs, &p->overflow_link);
 
-	p->overflow_queue[p->nr_overflows++] = priv_data->completion_data;
+	p->overflow_queue[p->nr_overflows++] = completion_data;
 	log_debug_ratelimited("tx: failed to send completion to runtime");
 	STAT_INC(COMPLETION_ENQUEUED, -1);
 	STAT_INC(TX_COMPLETION_OVERFLOW, 1);
@@ -150,6 +152,21 @@ success:
 	proc_put(p);
 	STAT_INC(COMPLETION_ENQUEUED, 1);
 	return true;
+}
+
+bool tx_send_completion(void *obj)
+{
+	struct rte_mbuf *buf;
+	struct tx_pktmbuf_priv *priv_data;
+	struct thread *th;
+	struct proc *p;
+
+	buf = (struct rte_mbuf *)obj;
+	priv_data = tx_pktmbuf_get_priv(buf);
+	p = priv_data->p;
+	th = priv_data->th;
+
+	return __tx_send_completion(p, th, priv_data->completion_data);
 }
 
 static int drain_overflow_queue(struct proc *p, int n)
@@ -166,11 +183,54 @@ static int drain_overflow_queue(struct proc *p, int n)
 	return i;
 }
 
+static int tx_drain_completions_from_pmyiok(struct lrpc_chan_in *chan, int n)
+{
+	uint64_t cmd, raw_cmd;
+	uint32_t ip_addr;
+	unsigned long completion_data;
+	struct proc *p;
+	int i, ret;
+	struct tx_net_hdr *hdr;
+	struct thread *th;
+
+	for (i = 0; i < n; ++i) {
+		if (!lrpc_recv(chan, &cmd, &completion_data))
+			break;
+
+		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
+		ip_addr = IOK2IOK_GET_IP(cmd);
+		RT_BUG_ON(raw_cmd != RX_NET_COMPLETE);
+
+		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
+		RT_BUG_ON(ret < 0);
+
+		// TODO: a hack based on the knowledge that completion_data is hdr
+		hdr = shmptr_to_ptr(&p->region, completion_data, sizeof(*hdr));
+		th = (struct thread *) hdr->private_seciok;
+
+		// TODO: check the output?
+		__tx_send_completion(p, th, completion_data);
+	}
+	return i;
+}
+
 bool tx_drain_completions(void)
 {
+	int drained_pmyiok = 0;
 	size_t drained = 0;
 	struct proc *p, *p_next;
 	struct list_head done;
+
+	// piggypack the tx completion path of the secondary iokernel here
+	if (cfg.is_secondary) {
+		for (int i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			if (drained_pmyiok >= IOKERNEL_TX_BURST_SIZE)
+				break;
+			drained_pmyiok += tx_drain_completions_from_pmyiok(
+				&iok_as_secondary_rxcmdq[i], IOKERNEL_TX_BURST_SIZE - drained_pmyiok
+			);
+		}
+	}
 
 	if (list_empty(&overflow_procs))
 		return false;
@@ -196,7 +256,7 @@ bool tx_drain_completions(void)
 }
 
 static int tx_drain_queue(struct thread *t, int n,
-			  const struct tx_net_hdr **hdrs)
+			  struct tx_net_hdr **hdrs)
 {
 	int i;
 
@@ -222,15 +282,69 @@ static int tx_drain_queue(struct thread *t, int n,
 	return i;
 }
 
+static int tx_drain_queue_from_seciok(struct lrpc_chan_in *chan, int n,
+				      struct tx_net_hdr **hdrs, struct proc **procs)
+{
+	int i, ret;
+	struct proc *p;
+
+	for (i = 0; i < n; i++) {
+		uint64_t cmd, raw_cmd;
+		uint32_t ip_addr;
+		unsigned long payload;
+
+		if (!lrpc_recv(chan, &cmd, &payload))
+			break;
+
+		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
+		ip_addr = IOK2IOK_GET_IP(cmd);
+		RT_BUG_ON(raw_cmd != TXPKT_NET_XMIT);
+
+		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
+		RT_BUG_ON(ret < 0);
+		RT_BUG_ON(!p->is_remote);
+
+		hdrs[i] = shmptr_to_ptr(&p->region, payload,
+					sizeof(struct tx_net_hdr));
+		RT_BUG_ON(!hdrs[i]);
+		procs[i] = p;
+	}
+	return i;
+}
+
+static void txpkt_send_to_pmyiok(struct lrpc_chan_out *chan,
+				 struct tx_net_hdr **hdrs, struct thread **threads, int n)
+{
+	int i;
+	shmptr_t shmptr;
+	uint32_t ip_addr;
+	struct proc *p;
+
+	for (i = 0; i < n; i++) {
+		p = threads[i]->p;
+		ip_addr = p->ip_addr;
+
+		hdrs[i]->private_seciok = (unsigned long) threads[i];
+		proc_get(p);
+
+		shmptr = ptr_to_shmptr(&p->region, (void *) hdrs[i], sizeof(*hdrs[i]));
+		if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(TXPKT_NET_XMIT, ip_addr),
+					shmptr))) {
+			log_warn_ratelimited("txpkt_send_to_pmyiok: failed to send to primary iokernel");
+			break;
+		}
+	}
+}
 
 /*
  * Process a batch of outgoing packets.
  */
 bool tx_burst(void)
 {
-	const struct tx_net_hdr *hdrs[IOKERNEL_TX_BURST_SIZE];
+	struct tx_net_hdr *hdrs[IOKERNEL_TX_BURST_SIZE];
 	static struct rte_mbuf *bufs[IOKERNEL_TX_BURST_SIZE];
 	struct thread *threads[IOKERNEL_TX_BURST_SIZE];
+	struct proc *procs[IOKERNEL_TX_BURST_SIZE];
 	int i, j, ret, pulltotal = 0;
 	static unsigned int pos = 0, n_pkts = 0, n_bufs = 0;
 	struct thread *t;
@@ -244,12 +358,27 @@ bool tx_burst(void)
 		t = ts[idx];
 		ret = tx_drain_queue(t, IOKERNEL_TX_BURST_SIZE - n_pkts,
 				     &hdrs[n_pkts]);
-		for (j = n_pkts; j < n_pkts + ret; j++)
+		for (j = n_pkts; j < n_pkts + ret; j++) {
 			threads[j] = t;
+			procs[j] = t->p;
+		}
 		n_pkts += ret;
 		pulltotal += ret;
 		if (n_pkts >= IOKERNEL_TX_BURST_SIZE)
 			goto full;
+	}
+
+	if (!cfg.is_secondary) {
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			if (n_pkts >= IOKERNEL_TX_BURST_SIZE)
+				break;
+			ret = tx_drain_queue_from_seciok(&iok_as_primary_txpktq[i], IOKERNEL_TX_BURST_SIZE - n_pkts,
+							 &hdrs[n_pkts], &procs[n_pkts]);
+			for (j = n_pkts; j < n_pkts + ret; j++)
+				threads[j] = NULL;
+			n_pkts += ret;
+			pulltotal += ret;
+		}
 	}
 
 	if (n_pkts == 0)
@@ -260,6 +389,13 @@ bool tx_burst(void)
 full:
 
 	stats[TX_PULLED] += pulltotal;
+
+	if (cfg.is_secondary) {
+		txpkt_send_to_pmyiok(&iok_as_secondary_txpktq[cfg.seciok_index],
+				     hdrs, threads, n_pkts);
+		n_pkts = 0;
+		return true;
+	}
 
 	/* allocate mbufs */
 	if (n_pkts - n_bufs > 0) {
@@ -276,7 +412,7 @@ full:
 	for (i = n_bufs; i < n_pkts; i++) {
 		if (i + TX_PREFETCH_STRIDE < n_pkts)
 			prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
-		tx_prepare_tx_mbuf(bufs[i], hdrs[i], threads[i]);
+		tx_prepare_tx_mbuf(bufs[i], hdrs[i], threads[i], procs[i]);
 	}
 
 	n_bufs = n_pkts;
@@ -368,14 +504,16 @@ int tx_init(void)
 	if (cfg.vfio_directpath)
 		return 0;
 
-	/* create a mempool to hold struct rte_mbufs and handle completions */
-	tx_mbuf_pool = tx_pktmbuf_completion_pool_create("TX_MBUF_POOL",
-			IOKERNEL_NUM_COMPLETIONS, sizeof(struct tx_pktmbuf_priv),
-			rte_socket_id());
+	if (!cfg.is_secondary) {
+		/* create a mempool to hold struct rte_mbufs and handle completions */
+		tx_mbuf_pool = tx_pktmbuf_completion_pool_create("TX_MBUF_POOL",
+				IOKERNEL_NUM_COMPLETIONS, sizeof(struct tx_pktmbuf_priv),
+				rte_socket_id());
 
-	if (tx_mbuf_pool == NULL) {
-		log_err("tx: couldn't create tx mbuf pool");
-		return -1;
+		if (tx_mbuf_pool == NULL) {
+			log_err("tx: couldn't create tx mbuf pool");
+			return -1;
+		}
 	}
 
 	return 0;

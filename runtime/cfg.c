@@ -384,6 +384,12 @@ static int parse_cxl_path(const char *name, const char *val)
 	return 0;
 }
 
+static int parse_iok_socket_index(const char *name, const char *val)
+{
+	iok_socket_index = atoi(val);
+	return 0;
+}
+
 #ifdef NO_SCHED
 void parse_list_str(char *list, bitmap_ptr_t bitmap) {
 	char *rest_list;
@@ -417,6 +423,7 @@ static int parse_cores(const char *name, const char *val)
 
 static const struct cfg_handler cfg_early_handler[] = {
 	{ "runtime_cxl_path", parse_cxl_path, true },
+	{ "runtime_iok_socket_index", parse_iok_socket_index, false },
 #ifdef NO_SCHED
 	{ "runtime_cores", parse_cores, true },
 #endif
@@ -490,6 +497,7 @@ int cfg_early_load(const char *path)
 
 	/* log some relevant config parameters */
 	log_info("early_cfg: cxl path: %s", rt_cxl_path);
+	log_info("early_cfg: iok socket index: %d", iok_socket_index);
 #ifdef NO_SCHED
 	bitmap_for_each_set(rt_cores, NCPU, i) {
 		log_info("early_cfg: core %d", i);

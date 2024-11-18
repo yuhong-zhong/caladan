@@ -40,7 +40,7 @@ use backend::*;
 mod lockstep;
 
 mod payload;
-use payload::{Payload, SyntheticProtocol, PAYLOAD_SIZE};
+use payload::{Payload, SyntheticProtocol, MAX_TOTAL_SIZE, PAYLOAD_SIZE};
 
 #[derive(Default)]
 pub struct Packet {
@@ -242,7 +242,7 @@ fn run_spawner_server(addr: SocketAddrV4, workerspec: &str) {
             let worker = SPAWNER_WORKER.as_ref().unwrap();
             worker.work(payload.work_iterations, payload.randomness);
             payload.randomness = shenango::rdtsc();
-            let mut array = ArrayVec::<_, PAYLOAD_SIZE>::new();
+            let mut array = ArrayVec::<_, MAX_TOTAL_SIZE>::new();
             payload.serialize_into(&mut array).unwrap();
             let _ = UdpSpawner::reply(d, array.as_slice());
             UdpSpawner::release_data(d);
@@ -657,7 +657,7 @@ fn run_client_worker(
     index: usize,
     live_mode_socket: Option<Arc<Connection>>,
 ) -> Vec<Option<ScheduleResult>> {
-    let mut payload = Vec::with_capacity(4096);
+    let mut payload = Vec::with_capacity(MAX_TOTAL_SIZE);
     let (mut packets, sched_boundaries) = gen_packets_for_schedule(&schedules);
     let src_addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), (100 + index) as u16);
     let live_mode = live_mode_socket.is_some();
@@ -674,7 +674,7 @@ fn run_client_worker(
     let rproto = proto.clone();
     let wg2 = wg.clone();
     let receive_thread = backend.spawn_thread(move || {
-        let mut recv_buf = vec![0; 4096];
+        let mut recv_buf = vec![0; MAX_TOTAL_SIZE];
         let mut receive_times = vec![None; packets_per_thread];
         let mut buf = Buffer::new(&mut recv_buf);
         let use_ordering = rproto.uses_ordered_requests();

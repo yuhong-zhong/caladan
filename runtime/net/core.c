@@ -100,7 +100,7 @@ static void net_rx_send_completion(unsigned long completion_data)
 	k = getk();
 	if (unlikely(!lrpc_send(&k->txcmdq, TXCMD_NET_COMPLETE,
 				completion_data))) {
-		WARN();
+		log_warn_ratelimited("failed to send rx completion to iokernel");
 	}
 	putk();
 }
@@ -279,6 +279,7 @@ static void iokernel_softirq_poll(struct kthread *k)
 					    MBUF_DEFAULT_LEN);
 			m = net_rx_alloc_mbuf(hdr);
 			if (unlikely(!m)) {
+				log_warn_ratelimited("net: failed to alloc mbuf");
 				STAT(DROPS)++;
 				continue;
 			}
@@ -404,6 +405,7 @@ static int net_tx_iokernel(struct mbuf *m)
 #endif
 
 	if (unlikely(!lrpc_send(&k->txpktq, TXPKT_NET_XMIT, shm))) {
+		log_warn_ratelimited("tx: failed to send to iokernel");
 		mbuf_pull_hdr(m, *hdr);
 		return -1;
 	}

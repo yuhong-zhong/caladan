@@ -143,7 +143,7 @@ static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned lon
 		list_add(&overflow_procs, &p->overflow_link);
 
 	p->overflow_queue[p->nr_overflows++] = completion_data;
-	log_debug_ratelimited("tx: failed to send completion to runtime");
+	log_warn_ratelimited("tx: failed to send completion to runtime");
 	STAT_INC(COMPLETION_ENQUEUED, -1);
 	STAT_INC(TX_COMPLETION_OVERFLOW, 1);
 

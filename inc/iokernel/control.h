@@ -32,13 +32,17 @@ enum {
 
 /* IOK2IOK communication */
 
-#define IOK2IOK_QUEUE_SIZE	8192UL
+#define IOK2IOK_DP_QUEUE_SIZE	(8192UL)
+#define IOK2IOK_CMD_QUEUE_SIZE	(512UL)
+
+#define IOK2IOK_DP_SHM_SIZE	(ROUND_UP(IOK2IOK_DP_QUEUE_SIZE * sizeof(struct lrpc_msg), PGSIZE_2MB))
+#define IOK2IOK_CMD_SHM_SIZE	(ROUND_UP(IOK2IOK_CMD_QUEUE_SIZE * sizeof(struct lrpc_msg), PGSIZE_2MB))
+#define IOK2IOK_TOTAL_SHM_SIZE	(4UL * IOK2IOK_DP_SHM_SIZE + 2UL * IOK2IOK_CMD_SHM_SIZE)
+
 #define MAX_NR_IOK2IOK		1UL
 
 // All iok2iok QP head pointers must fit in a 2MB page
 BUILD_ASSERT(MAX_NR_IOK2IOK * 6 * sizeof(uint32_t) <= PGSIZE_2MB);
-// Each iok2iok QP buffer must fit in a 2MB page
-BUILD_ASSERT(IOK2IOK_QUEUE_SIZE * 6 * sizeof(struct lrpc_msg) <= PGSIZE_2MB);
 
 /* primary iokernel */
 extern struct lrpc_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK];

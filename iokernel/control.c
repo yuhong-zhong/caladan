@@ -993,37 +993,47 @@ int control_init(void)
 	RT_BUG_ON(shbuf_cxl_offset != 0);
 
 	for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
-		shbuf = cxl_early_alloc(IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 6, PGSIZE_2MB, &shbuf_cxl_offset);
+		shbuf = cxl_early_alloc(IOK2IOK_TOTAL_SHM_SIZE, PGSIZE_2MB, &shbuf_cxl_offset);
 		RT_BUG_ON(shbuf == NULL);
 		RT_BUG_ON(shbuf_cxl_offset != (i + 1) * PGSIZE_2MB);
 
 		if (cfg.is_secondary) {
-			ret = lrpc_init_in(&iok_as_secondary_rxq[i], shbuf, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i);
+			ret = lrpc_init_in(&iok_as_secondary_rxq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_in(&iok_as_secondary_rxcmdq[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 1, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 1);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
+			ret = lrpc_init_in(&iok_as_secondary_rxcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i + 1);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_out(&iok_as_secondary_txpktq[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 2, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 2);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
+			ret = lrpc_init_out(&iok_as_secondary_txpktq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i + 2);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_out(&iok_as_secondary_txcmdq[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 3, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 3);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
+			ret = lrpc_init_out(&iok_as_secondary_txcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i + 3);
 			RT_BUG_ON(ret != 0);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
 
-			ret = lrpc_init_out(&iok_as_secondary_cmdq_out[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 4, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 4);
+			ret = lrpc_init_out(&iok_as_secondary_cmdq_out[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, qp_head_arr + 6 * i + 4);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_in(&iok_as_secondary_cmdq_in[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 5, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 5);
+			shbuf += IOK2IOK_CMD_SHM_SIZE;
+			ret = lrpc_init_in(&iok_as_secondary_cmdq_in[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, qp_head_arr + 6 * i + 5);
 			RT_BUG_ON(ret != 0);
 		} else {
-			ret = lrpc_init_out(&iok_as_primary_rxq[i], shbuf, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i);
+			ret = lrpc_init_out(&iok_as_primary_rxq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_out(&iok_as_primary_rxcmdq[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 1, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 1);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
+			ret = lrpc_init_out(&iok_as_primary_rxcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i + 1);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_in(&iok_as_primary_txpktq[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 2, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 2);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
+			ret = lrpc_init_in(&iok_as_primary_txpktq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i + 2);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_in(&iok_as_primary_txcmdq[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 3, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 3);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
+			ret = lrpc_init_in(&iok_as_primary_txcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, qp_head_arr + 6 * i + 3);
 			RT_BUG_ON(ret != 0);
+			shbuf += IOK2IOK_DP_SHM_SIZE;
 
-			ret = lrpc_init_in(&iok_as_primary_cmdq_in[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 4, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 4);
+			ret = lrpc_init_in(&iok_as_primary_cmdq_in[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, qp_head_arr + 6 * i + 4);
 			RT_BUG_ON(ret != 0);
-			ret = lrpc_init_out(&iok_as_primary_cmdq_out[i], shbuf + IOK2IOK_QUEUE_SIZE * sizeof(struct lrpc_msg) * 5, IOK2IOK_QUEUE_SIZE, qp_head_arr + 6 * i + 5);
+			shbuf += IOK2IOK_CMD_SHM_SIZE;
+			ret = lrpc_init_out(&iok_as_primary_cmdq_out[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, qp_head_arr + 6 * i + 5);
 			RT_BUG_ON(ret != 0);
 		}
 	}

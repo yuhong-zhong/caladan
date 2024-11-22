@@ -54,6 +54,7 @@ extern bool vfio_prealloc_rmp;
 #define IOKERNEL_RX_BURST_SIZE		64
 #define IOKERNEL_CONTROL_BURST_SIZE	4
 #define IOKERNEL_POLL_INTERVAL		10
+#define IOKERNEL_MBUF_SIZE		(RTE_PKTMBUF_HEADROOM + 9018)
 
 /* Ensure that uint16_t can be used to index procs/cores */
 BUILD_ASSERT(NCPU < UINT16_MAX);

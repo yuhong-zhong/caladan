@@ -340,7 +340,7 @@ int rx_init()
 
 	/* create a mempool in shared memory to hold the rx mbufs */
 	dp.rx_mbuf_pool = rx_pktmbuf_pool_create_in_shm("RX_MBUF_POOL",
-			IOKERNEL_NUM_MBUFS, MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
+			IOKERNEL_NUM_MBUFS, MBUF_CACHE_SIZE, 0, IOKERNEL_MBUF_SIZE,
 			rte_socket_id());
 
 	if (dp.rx_mbuf_pool == NULL) {

@@ -19,7 +19,7 @@ pub struct Payload {
 }
 
 pub const PAYLOAD_SIZE: usize = 32;
-pub const MAX_EXTRA_PAYLOAD_SIZE: usize = 8192;
+pub const MAX_EXTRA_PAYLOAD_SIZE: usize = 8925;
 pub const MAX_TOTAL_SIZE: usize = PAYLOAD_SIZE + MAX_EXTRA_PAYLOAD_SIZE;
 
 #[derive(Clone, Copy)]

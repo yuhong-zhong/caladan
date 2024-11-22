@@ -57,6 +57,7 @@ extern bool vfio_prealloc_rmp;
 #define IOKERNEL_RX_BURST_SIZE		64
 #define IOKERNEL_CONTROL_BURST_SIZE	4
 #define IOKERNEL_POLL_INTERVAL		10
+#define IOKERNEL_MBUF_SIZE		(RTE_PKTMBUF_HEADROOM + 9018)
 
 /* Ensure that uint16_t can be used to index procs/cores */
 BUILD_ASSERT(NCPU < UINT16_MAX);
@@ -460,11 +461,10 @@ extern int pin_thread(pid_t tid, int core);
 
 extern const char *iok_cxl_path;
 extern uint64_t iok_cxl_size;
-#define CXL_FALLBACK_SIZE (1UL << 34UL)
 
 extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset);
 
-#define CXL_CLIENT_SIZE (1UL << 30UL)
+#define CXL_CLIENT_SIZE (1UL << 31UL)
 extern void *cxl_alloc_client(uint64_t *out_cxl_offset);
 extern void cxl_free_client(void *ptr);
 void *cxl_get_client(uint64_t cxl_offset);

@@ -31,6 +31,9 @@ unsigned int sched_siblings[NCPU];
 unsigned int sched_dp_core;	/* used for the iokernel's dataplane */
 unsigned int sched_ctrl_core;	/* used for the iokernel's controlplane */
 
+bool sched_dp_core_supplied = false;
+bool sched_ctrl_core_supplied = false;
+
 /* keeps track of which cores are in each NUMA socket */
 struct socket socket_state[NNUMA];
 int managed_numa_node;
@@ -999,11 +1002,14 @@ int sched_init(void)
 	 * third pass: reserve cores for iokernel and system
 	 */
 
-	sched_ctrl_core = bitmap_find_next_set(sched_allowed_cores, NCPU, 0);
-	if (cfg.noht)
-		sched_dp_core = bitmap_find_next_set(sched_allowed_cores, NCPU, sched_ctrl_core + 1);
-	else
-		sched_dp_core = sched_siblings[sched_ctrl_core];
+	if (!sched_ctrl_core_supplied)
+		sched_ctrl_core = bitmap_find_next_set(sched_allowed_cores, NCPU, 0);
+	if (!sched_dp_core_supplied) {
+		if (cfg.noht)
+			sched_dp_core = bitmap_find_next_set(sched_allowed_cores, NCPU, sched_ctrl_core + 1);
+		else
+			sched_dp_core = sched_siblings[sched_ctrl_core];
+	}
 	bitmap_clear(sched_allowed_cores, sched_ctrl_core);
 	bitmap_clear(sched_allowed_cores, sched_dp_core);
 	log_info("sched: dataplane on %d, control on %d",

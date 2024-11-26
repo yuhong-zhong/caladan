@@ -23,29 +23,37 @@
 /*
  * Prepend rx_net_hdr preamble to ingress packets.
  */
+
+static void do_rx_prepend_rx_preamble(struct rx_net_hdr *net_hdr, uint64_t completion_data,
+				      uint32_t len, uint32_t rss_hash, uint32_t csum_type)
+{
+	net_hdr->completion_data = completion_data;
+	net_hdr->len = len;
+	net_hdr->rss_hash = rss_hash;
+	net_hdr->csum_type = csum_type;
+	net_hdr->csum = 0; /* unused for now */
+}
+
 static struct rx_net_hdr *rx_prepend_rx_preamble(struct rte_mbuf *buf)
 {
 	struct rx_net_hdr *net_hdr;
-	uint64_t masked_ol_flags;
+	uint64_t masked_ol_flags, completion_data;
+	uint32_t csum_type;
 
 	net_hdr = (struct rx_net_hdr *) rte_pktmbuf_prepend(buf,
 			(uint16_t) sizeof(*net_hdr));
 	RTE_ASSERT(net_hdr != NULL);
 
-	net_hdr->completion_data = (unsigned long)buf;
-	net_hdr->len = rte_pktmbuf_pkt_len(buf) - sizeof(*net_hdr);
-	net_hdr->rss_hash = buf->hash.rss;
 	masked_ol_flags = buf->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
 	if (masked_ol_flags == RTE_MBUF_F_RX_IP_CKSUM_GOOD)
-		net_hdr->csum_type = CHECKSUM_TYPE_UNNECESSARY;
+		csum_type = CHECKSUM_TYPE_UNNECESSARY;
 	else
-		net_hdr->csum_type = CHECKSUM_TYPE_NEEDED;
-	net_hdr->csum = 0; /* unused for now */
-// #ifdef NO_CACHE_COHERENCE
-// 	batch_clwb(net_hdr, sizeof(*net_hdr));
-// 	_mm_sfence();
-// #endif
+		csum_type = CHECKSUM_TYPE_NEEDED;
 
+	completion_data = (unsigned long) ptr_to_shmptr(&dp.ingress_mbuf_region, buf, sizeof(*buf));
+	do_rx_prepend_rx_preamble(net_hdr, completion_data,
+				  rte_pktmbuf_pkt_len(buf) - sizeof(*net_hdr),
+				  buf->hash.rss, csum_type);
 	return net_hdr;
 }
 
@@ -84,21 +92,51 @@ bool rx_send_to_runtime(struct proc *p, uint32_t hash, uint64_t cmd,
 	return lrpc_send(&th->rxq, cmd, payload);
 }
 
-static bool rx_send_to_seciok(struct proc *p, uint64_t cmd, unsigned long payload)
+static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 {
 	struct lrpc_chan_out *chan = &iok_as_primary_rxq[p->seciok_index];
-	if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(cmd, p->ip_addr), payload))) {
+	uint32_t len, off, csum_type, rawcmd;
+	uint64_t masked_ol_flags;
+	struct rx_net_hdr *net_hdr;
+	shmptr_t shmptr;
+	uint64_t payload;
+
+	len = rte_pktmbuf_pkt_len(buf);
+	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(len >= (1u << 16u));
+
+	masked_ol_flags = buf->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
+	if (masked_ol_flags == RTE_MBUF_F_RX_IP_CKSUM_GOOD)
+		csum_type = CHECKSUM_TYPE_UNNECESSARY;
+	else
+		csum_type = CHECKSUM_TYPE_NEEDED;
+	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(csum_type >= (1u << 1u));
+
+	net_hdr = (struct rx_net_hdr *) rte_pktmbuf_prepend(buf,
+			(uint16_t) sizeof(*net_hdr));
+	RTE_ASSERT(net_hdr != NULL);
+	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, net_hdr, sizeof(*net_hdr));
+	// IOK2IOK_RXPKT_MAKE_PAYLOAD assumption
+	RT_BUG_ON(shmptr > UINT32_MAX);
+
+	off = (uint64_t) net_hdr - (uint64_t) buf;
+	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(off >= (1u << 14u));
+
+	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, csum_type);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_LEN(rawcmd) != len);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_OFF(rawcmd) != off);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) != csum_type);
+	payload = IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, buf->hash.rss);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != buf->hash.rss);
+
+	if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->ip_addr), payload))) {
 		log_err_ratelimited("rx: failed to send to secondary iokernel");
 		return false;
 	}
 	return true;
-}
-
-static bool rx_send_pkt_to_seciok(struct proc *p, uint64_t cmd, struct rx_net_hdr *hdr)
-{
-	shmptr_t shmptr;
-	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, hdr, sizeof(*hdr));
-	return rx_send_to_seciok(p, cmd, shmptr);
 }
 
 static bool rx_send_pkt_to_runtime(struct proc *p, struct rx_net_hdr *hdr)
@@ -204,15 +242,15 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 		goto fail_free;
 	}
 
-	net_hdr = rx_prepend_rx_preamble(buf);
-
 	if (p->is_remote) {
-		if (!rx_send_pkt_to_seciok(p, RX_NET_RECV, net_hdr)) {
+		if (!rx_send_pkt_to_seciok(p, buf)) {
 			STAT_INC(RX_UNICAST_FAIL, 1);
 			goto fail_free;
 		}
 		return;
 	}
+
+	net_hdr = rx_prepend_rx_preamble(buf);
 
 	if (!rx_send_pkt_to_runtime(p, net_hdr)) {
 		STAT_INC(RX_UNICAST_FAIL, 1);
@@ -240,8 +278,8 @@ fail_free:
 static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
 {
 	int i;
-	uint64_t cmd, raw_cmd;
-	uint32_t ip_addr;
+	uint64_t cmd, completion_data;
+	uint32_t ip_addr, rss, len, off, csum_type, rawcmd;
 	unsigned long payload;
 	shmptr_t shmptr;
 	struct rx_net_hdr *hdr;
@@ -253,19 +291,22 @@ static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
 		if (!lrpc_recv(chan, &cmd, &payload))
 			break;
 
-		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
+		rawcmd = IOK2IOK_GET_RAWCMD(cmd);
 		ip_addr = IOK2IOK_GET_IP(cmd);
 
-		RT_BUG_ON(raw_cmd != RX_NET_RECV);
 		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
 		RT_BUG_ON(ret < 0);
 
-		shmptr = (shmptr_t) payload;
+		shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
 		hdr = shmptr_to_ptr(&dp.ingress_mbuf_region, shmptr, sizeof(*hdr));
+		rss = IOK2IOK_RXPKT_GET_RSS(payload);
 
-		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
-		RT_BUG_ON(ret < 0);
+		len = IOK2IOK_RXPKT_GET_LEN(rawcmd);
+		csum_type = IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd);
+		off = IOK2IOK_RXPKT_GET_OFF(rawcmd);
+		completion_data = ((uint64_t) shmptr) - ((uint64_t) off);
 
+		do_rx_prepend_rx_preamble(hdr, completion_data, len, rss, csum_type);
 		success = rx_send_pkt_to_runtime(p, hdr);
 		if (!success) {
 			STAT_INC(RX_UNICAST_FAIL, 1);

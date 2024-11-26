@@ -110,12 +110,22 @@ static struct mbuf *net_rx_alloc_mbuf(struct rx_net_hdr *hdr)
 	struct mbuf *m;
 	void *buf;
 
+// #ifdef NO_CACHE_COHERENCE
+// 	batch_clflushopt(hdr, sizeof(*hdr));
+// 	_mm_sfence();
+// #endif
+
 	/* allocate the buffer to store the payload */
 	m = smalloc(hdr->len + MBUF_HEAD_LEN);
 	if (unlikely(!m))
 		goto out;
 
 	buf = (unsigned char *)m + MBUF_HEAD_LEN;
+
+// #ifdef NO_CACHE_COHERENCE
+// 	batch_clflushopt(hdr->payload, hdr->len);
+// 	_mm_sfence();
+// #endif
 
 	/* copy the payload and release the buffer back to the iokernel */
 	memcpy(buf, hdr->payload, hdr->len);
@@ -398,11 +408,14 @@ static int net_tx_iokernel(struct mbuf *m)
 	hdr->len = len;
 	hdr->olflags = m->txflags;
 	shmptr_t shm = ptr_to_shmptr(&netcfg.tx_region, hdr, len + sizeof(*hdr));
-	hdr->completion_data = (unsigned long) shm;
 	hdr->mbuf = (void *) m;
 #ifdef NO_CACHE_COHERENCE
-	batch_clwb(hdr, len + sizeof(*hdr));
+	batch_clwb(hdr, sizeof(*hdr) + len);
+	_mm_sfence();
 #endif
+	// IOK2IOK_TXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(len >= (1u << 16u));
+	RT_BUG_ON(hdr->olflags >= (1u << 15u));
 
 	if (unlikely(!lrpc_send(&k->txpktq, TXPKT_NET_XMIT, shm))) {
 		log_warn_ratelimited("tx: failed to send to iokernel");

@@ -44,33 +44,33 @@ static inline struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf)
 /*
  * Prepare rte_mbuf struct for transmission.
  */
-static void tx_prepare_tx_mbuf(struct rte_mbuf *buf,
-			       const struct tx_net_hdr *net_hdr,
+static void tx_prepare_tx_mbuf(struct rte_mbuf *buf, struct tx_net_hdr *net_hdr,
+			       unsigned short len, unsigned short olflags,
 			       struct thread *th, struct proc *p)
 {
 	uint32_t page_number;
 	struct tx_pktmbuf_priv *priv_data;
 
 	/* initialize mbuf to point to net_hdr->payload */
-	buf->buf_addr = (char *)net_hdr->payload;
+	buf->buf_addr = ((char *) net_hdr) + sizeof(*net_hdr);
 	page_number = PGN_2MB((uintptr_t)buf->buf_addr - (uintptr_t)p->region.base);
 	buf->buf_iova = p->page_paddrs[page_number] + PGOFF_2MB(buf->buf_addr);
 	buf->data_off = 0;
 	rte_mbuf_refcnt_set(buf, 1);
 
-	buf->buf_len = net_hdr->len;
-	buf->pkt_len = net_hdr->len;
-	buf->data_len = net_hdr->len;
+	buf->buf_len = len;
+	buf->pkt_len = len;
+	buf->data_len = len;
 
 	buf->ol_flags = 0;
-	if (net_hdr->olflags != 0) {
-		if (net_hdr->olflags & OLFLAG_IP_CHKSUM)
+	if (olflags != 0) {
+		if (olflags & OLFLAG_IP_CHKSUM)
 			buf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
-		if (net_hdr->olflags & OLFLAG_TCP_CHKSUM)
+		if (olflags & OLFLAG_TCP_CHKSUM)
 			buf->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
-		if (net_hdr->olflags & OLFLAG_IPV4)
+		if (olflags & OLFLAG_IPV4)
 			buf->ol_flags |= RTE_MBUF_F_TX_IPV4;
-		if (net_hdr->olflags & OLFLAG_IPV6)
+		if (olflags & OLFLAG_IPV6)
 			buf->ol_flags |= RTE_MBUF_F_TX_IPV6;
 
 		buf->l4_len = sizeof(struct rte_tcp_hdr);
@@ -82,7 +82,7 @@ static void tx_prepare_tx_mbuf(struct rte_mbuf *buf,
 	priv_data = tx_pktmbuf_get_priv(buf);
 	priv_data->p = p;
 	priv_data->th = th;
-	priv_data->completion_data = net_hdr->completion_data;
+	priv_data->completion_data = (unsigned long) ptr_to_shmptr(&p->region, net_hdr, sizeof(*net_hdr));
 
 #ifdef MLX
 	/* initialize private data used by Mellanox driver to register memory */
@@ -283,7 +283,8 @@ static int tx_drain_queue(struct thread *t, int n,
 }
 
 static int tx_drain_queue_from_seciok(struct lrpc_chan_in *chan, int n,
-				      struct tx_net_hdr **hdrs, struct proc **procs)
+				      struct tx_net_hdr **hdrs, unsigned short *lens,
+				      unsigned short *olflags, struct proc **procs)
 {
 	int i, ret;
 	struct proc *p;
@@ -298,7 +299,9 @@ static int tx_drain_queue_from_seciok(struct lrpc_chan_in *chan, int n,
 
 		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
 		ip_addr = IOK2IOK_GET_IP(cmd);
-		RT_BUG_ON(raw_cmd != TXPKT_NET_XMIT);
+
+		lens[i] = IOK2IOK_TXPKT_GET_LEN(raw_cmd);
+		olflags[i] = IOK2IOK_TXPKT_GET_OLFLAGS(raw_cmd);
 
 		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
 		RT_BUG_ON(ret < 0);
@@ -321,6 +324,9 @@ static void txpkt_send_to_pmyiok(struct lrpc_chan_out *chan,
 	struct proc *p;
 
 	for (i = 0; i < n; i++) {
+		if (i + TX_PREFETCH_STRIDE < n)
+			prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
+
 		p = threads[i]->p;
 		ip_addr = p->ip_addr;
 
@@ -328,7 +334,7 @@ static void txpkt_send_to_pmyiok(struct lrpc_chan_out *chan,
 		proc_get(p);
 
 		shmptr = ptr_to_shmptr(&p->region, (void *) hdrs[i], sizeof(*hdrs[i]));
-		if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(TXPKT_NET_XMIT, ip_addr),
+		if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), ip_addr),
 					shmptr))) {
 			log_warn_ratelimited("txpkt_send_to_pmyiok: failed to send to primary iokernel");
 			break;
@@ -342,6 +348,8 @@ static void txpkt_send_to_pmyiok(struct lrpc_chan_out *chan,
 bool tx_burst(void)
 {
 	struct tx_net_hdr *hdrs[IOKERNEL_TX_BURST_SIZE];
+	unsigned short lens[IOKERNEL_TX_BURST_SIZE];
+	unsigned short olflags[IOKERNEL_TX_BURST_SIZE];
 	static struct rte_mbuf *bufs[IOKERNEL_TX_BURST_SIZE];
 	struct thread *threads[IOKERNEL_TX_BURST_SIZE];
 	struct proc *procs[IOKERNEL_TX_BURST_SIZE];
@@ -361,6 +369,11 @@ bool tx_burst(void)
 		for (j = n_pkts; j < n_pkts + ret; j++) {
 			threads[j] = t;
 			procs[j] = t->p;
+			// TODO: could use prefetching to optimize this part
+			if (!cfg.is_secondary) {
+				lens[j] = hdrs[j]->len;
+				olflags[j] = hdrs[j]->olflags;
+			}
 		}
 		n_pkts += ret;
 		pulltotal += ret;
@@ -373,9 +386,7 @@ bool tx_burst(void)
 			if (n_pkts >= IOKERNEL_TX_BURST_SIZE)
 				break;
 			ret = tx_drain_queue_from_seciok(&iok_as_primary_txpktq[i], IOKERNEL_TX_BURST_SIZE - n_pkts,
-							 &hdrs[n_pkts], &procs[n_pkts]);
-			for (j = n_pkts; j < n_pkts + ret; j++)
-				threads[j] = NULL;
+							 &hdrs[n_pkts], &lens[n_pkts], &olflags[n_pkts], &procs[n_pkts]);
 			n_pkts += ret;
 			pulltotal += ret;
 		}
@@ -410,9 +421,9 @@ full:
 
 	/* fill in packet metadata */
 	for (i = n_bufs; i < n_pkts; i++) {
-		if (i + TX_PREFETCH_STRIDE < n_pkts)
-			prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
-		tx_prepare_tx_mbuf(bufs[i], hdrs[i], threads[i], procs[i]);
+		// if (i + TX_PREFETCH_STRIDE < n_pkts)
+		// 	prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
+		tx_prepare_tx_mbuf(bufs[i], hdrs[i], lens[i], olflags[i], threads[i], procs[i]);
 	}
 
 	n_bufs = n_pkts;
@@ -427,6 +438,8 @@ full:
 		n_pkts -= ret;
 		for (i = 0; i < n_pkts; i++)
 			bufs[i] = bufs[ret + i];
+		log_warn_ratelimited("tx: rte_eth_tx_burst failed to send %d out of %d packets",
+				     n_pkts, n_pkts + ret);
 	} else {
 		n_pkts = 0;
 	}

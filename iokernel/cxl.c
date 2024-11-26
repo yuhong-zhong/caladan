@@ -81,6 +81,7 @@ void *cxl_alloc_client(uint64_t *out_cxl_offset)
         memset(client_buf_base + i * CXL_CLIENT_SIZE, 0, CXL_CLIENT_SIZE);
 #ifdef NO_CACHE_COHERENCE
         batch_clwb(client_buf_base + i * CXL_CLIENT_SIZE, CXL_CLIENT_SIZE);
+        _mm_sfence();
 #endif
 
         if (out_cxl_offset != NULL)
@@ -168,6 +169,7 @@ int cxl_init(void)
                 memset(cxl_buf, 0, iok_cxl_size);
 #ifdef NO_CACHE_COHERENCE
                 batch_clwb(cxl_buf, iok_cxl_size);
+                _mm_sfence();
 #endif
         }
         close(fd);

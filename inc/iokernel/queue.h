@@ -18,12 +18,10 @@ struct rx_net_hdr {
 
 /* preamble to egress network packets */
 struct tx_net_hdr {
-	unsigned long completion_data; /* a tag to help complete the request */
 	unsigned int len;	/* the length of the payload */
 	unsigned int olflags;	/* offload flags */
 	unsigned long private_seciok;
 	void *mbuf;
-	char	     payload[];	/* packet data */
 } __attribute__((__packed__));
 
 /* possible values for @csum_type above */

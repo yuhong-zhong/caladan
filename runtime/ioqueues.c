@@ -268,6 +268,7 @@ int ioqueues_init_early(void)
 	RT_BUG_ON(iok.iok_info->magic_number != 0xbeef);
 #ifdef NO_CACHE_COHERENCE
 	batch_clflushopt(iok.iok_info, sizeof(*iok.iok_info));
+	_mm_sfence();
 #endif
 	memcpy(&netcfg.mac, &iok.iok_info->host_mac, sizeof(netcfg.mac));
 
@@ -466,6 +467,7 @@ int ioqueues_register_iokernel(void)
 #ifdef NO_CACHE_COHERENCE
 	batch_clwb(hdr, sizeof(*hdr));
 	batch_clwb(iok.threads, sizeof(*iok.threads) * maxks);
+	_mm_sfence();
 #endif
 
 	// // Make sure it's an abstract namespace path.

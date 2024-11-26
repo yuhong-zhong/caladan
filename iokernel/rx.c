@@ -41,6 +41,10 @@ static struct rx_net_hdr *rx_prepend_rx_preamble(struct rte_mbuf *buf)
 	else
 		net_hdr->csum_type = CHECKSUM_TYPE_NEEDED;
 	net_hdr->csum = 0; /* unused for now */
+// #ifdef NO_CACHE_COHERENCE
+// 	batch_clwb(net_hdr, sizeof(*net_hdr));
+// 	_mm_sfence();
+// #endif
 
 	return net_hdr;
 }
@@ -212,6 +216,7 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 
 	if (!rx_send_pkt_to_runtime(p, net_hdr)) {
 		STAT_INC(RX_UNICAST_FAIL, 1);
+		log_warn_ratelimited("rx: failed to send packet to runtime");
 		goto fail_free;
 	}
 
@@ -262,7 +267,15 @@ static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
 		RT_BUG_ON(ret < 0);
 
 		success = rx_send_pkt_to_runtime(p, hdr);
-		RT_BUG_ON(!success);
+		if (!success) {
+			STAT_INC(RX_UNICAST_FAIL, 1);
+			STAT_INC(RX_UNHANDLED, 1);
+			success = lrpc_send(&iok_as_secondary_txcmdq[cfg.seciok_index],
+					    IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0),
+					    hdr->completion_data);
+			RT_BUG_ON(!success);
+			log_warn_ratelimited("rx: failed to send packet to runtime");
+		}
 	}
 
 	return i;

@@ -131,16 +131,10 @@ static inline int shm_init_lrpc_in(struct shm_region *r, struct queue_spec *s,
 			sizeof(struct lrpc_msg) * s->msg_count);
 	if (!tbl)
 		return -EINVAL;
-#ifdef NO_CACHE_COHERENCE
-	batch_clflushopt(tbl, sizeof(struct lrpc_msg) * s->msg_count);
-#endif
 
 	wb = (uint32_t *) shmptr_to_ptr(r, s->wb, sizeof(*wb));
 	if (!wb)
 		return -EINVAL;
-#ifdef NO_CACHE_COHERENCE
-	batch_clflushopt(wb, sizeof(*wb));
-#endif
 
 	return lrpc_init_in(c, tbl, s->msg_count, wb);
 }
@@ -155,16 +149,10 @@ static inline int shm_init_lrpc_out(struct shm_region *r, struct queue_spec *s,
 			sizeof(struct lrpc_msg) * s->msg_count);
 	if (!tbl)
 		return -EINVAL;
-#ifdef NO_CACHE_COHERENCE
-	batch_clflushopt(tbl, sizeof(struct lrpc_msg) * s->msg_count);
-#endif
 
 	wb = (uint32_t *) shmptr_to_ptr(r, s->wb, sizeof(*wb));
 	if (!wb)
 		return -EINVAL;
-#ifdef NO_CACHE_COHERENCE
-	batch_clflushopt(wb, sizeof(*wb));
-#endif
 
 	return lrpc_init_out(c, tbl, s->msg_count, wb);
 }

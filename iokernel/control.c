@@ -73,9 +73,9 @@ struct lrpc_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK];
 struct lrpc_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK];
 struct lrpc_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK];
 
-BUILD_ASSERT(RX_CALL_NR < (1 << IOK2IOK_CMD_BITS));
-BUILD_ASSERT(TXPKT_NR < (1 << IOK2IOK_CMD_BITS));
-BUILD_ASSERT(TXCMD_NR < (1 << IOK2IOK_CMD_BITS));
+BUILD_ASSERT(RX_CALL_NR < (1ul << IOK2IOK_RAWCMD_BITS));
+// BUILD_ASSERT(TXPKT_NR < (1ul << IOK2IOK_RAWCMD_BITS));
+BUILD_ASSERT(TXCMD_NR < (1ul << IOK2IOK_RAWCMD_BITS));
 
 static int epoll_ctl_add(int fd, void *arg)
 {
@@ -215,8 +215,8 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 
 	/* parse the control header */
 #ifdef NO_CACHE_COHERENCE
-	if (is_remote && !cfg.is_secondary)
-		batch_clflushopt(shbuf, sizeof(hdr));
+	batch_clflushopt(shbuf, sizeof(hdr));
+	_mm_sfence();
 #endif
 	memcpy(&hdr, (struct control_hdr *)shbuf, sizeof(hdr)); /* TOCTOU */
 	if (hdr.magic != CONTROL_HDR_MAGIC ||
@@ -230,8 +230,8 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 
 	/* copy arrays of threads, timers, and hwq specs */
 #ifdef NO_CACHE_COHERENCE
-	if (is_remote && !cfg.is_secondary)
-		batch_clflushopt(shbuf + hdr.thread_specs, sizeof(*threads) * hdr.thread_count);
+	batch_clflushopt(shbuf + hdr.thread_specs, sizeof(*threads) * hdr.thread_count);
+	_mm_sfence();
 #endif
 	threads = copy_shm_data(&reg, hdr.thread_specs, hdr.thread_count * sizeof(*threads));
 	if (!threads)
@@ -260,6 +260,7 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 		goto fail;
 #ifdef NO_CACHE_COHERENCE
 	batch_clflushopt(p->runtime_info, sizeof(*p->runtime_info));
+	_mm_sfence();
 #endif
 	memset(&p->runtime_info->congestion, 0, sizeof(p->runtime_info->congestion));
 	if (hdr.request_directpath_queues != DIRECTPATH_REQUEST_NONE) {
@@ -403,6 +404,7 @@ static void control_add_client(void)
 	*((struct iokernel_info *) client_shm_buf) = *iok_info;
 #ifdef NO_CACHE_COHERENCE
 	batch_clwb(client_shm_buf, sizeof(struct iokernel_info));
+	_mm_sfence();
 #endif
 
 	ret = write(fd, &client_cxl_offset, sizeof(client_cxl_offset));

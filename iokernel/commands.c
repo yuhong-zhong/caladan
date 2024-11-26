@@ -106,7 +106,7 @@ bool commands_rx(void)
 		commands_send_to_pmyiok(&iok_as_secondary_txcmdq[cfg.seciok_index], bufs, n_bufs);
 	} else {
 		for (i = 0; i < n_bufs; i++)
-			rte_pktmbuf_free((struct rte_mbuf *) bufs[i]);
+			rte_pktmbuf_free(shmptr_to_ptr(&dp.ingress_mbuf_region, bufs[i], sizeof(struct rte_mbuf)));
 	}
 	return n_bufs > 0;
 }

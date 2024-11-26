@@ -82,6 +82,14 @@ enum {
 #define IOK2IOK_TXPKT_GET_LEN(rawcmd) ((rawcmd) & 0xffffu)
 #define IOK2IOK_TXPKT_GET_OLFLAGS(rawcmd) ((rawcmd) >> 16u)
 
+#define IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, csum_type) (((uint32_t) len) | (((uint32_t) off) << 16u) | (((uint32_t) csum_type) << 30u))
+#define IOK2IOK_RXPKT_GET_LEN(rawcmd) ((rawcmd) & 0xffffu)
+#define IOK2IOK_RXPKT_GET_OFF(rawcmd) (((rawcmd) >> 16u) & 0x3fffu)
+#define IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) ((rawcmd) >> 30u)
+#define IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss) (((uint64_t) shmptr) | (((uint64_t) rss) << 32ul))
+#define IOK2IOK_RXPKT_GET_SHMPTR(payload) ((shmptr_t) (payload & 0xfffffffful))
+#define IOK2IOK_RXPKT_GET_RSS(payload) ((uint32_t) (payload >> 32ul))
+
 // Leave 1b for parity
 BUILD_ASSERT(IOK2IOK_RAWCMD_BITS + 4 * 8 + 1 <= sizeof(uint64_t) * 8);
 

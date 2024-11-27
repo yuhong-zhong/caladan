@@ -19,44 +19,6 @@
 #define MBUF_CACHE_SIZE 250
 #define RX_PREFETCH_STRIDE 2
 
-
-/*
- * Prepend rx_net_hdr preamble to ingress packets.
- */
-
-static void do_rx_prepend_rx_preamble(struct rx_net_hdr *net_hdr, uint64_t completion_data,
-				      uint32_t len, uint32_t rss_hash, uint32_t csum_type)
-{
-	net_hdr->completion_data = completion_data;
-	net_hdr->len = len;
-	net_hdr->rss_hash = rss_hash;
-	net_hdr->csum_type = csum_type;
-	net_hdr->csum = 0; /* unused for now */
-}
-
-static struct rx_net_hdr *rx_prepend_rx_preamble(struct rte_mbuf *buf)
-{
-	struct rx_net_hdr *net_hdr;
-	uint64_t masked_ol_flags, completion_data;
-	uint32_t csum_type;
-
-	net_hdr = (struct rx_net_hdr *) rte_pktmbuf_prepend(buf,
-			(uint16_t) sizeof(*net_hdr));
-	RTE_ASSERT(net_hdr != NULL);
-
-	masked_ol_flags = buf->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
-	if (masked_ol_flags == RTE_MBUF_F_RX_IP_CKSUM_GOOD)
-		csum_type = CHECKSUM_TYPE_UNNECESSARY;
-	else
-		csum_type = CHECKSUM_TYPE_NEEDED;
-
-	completion_data = (unsigned long) ptr_to_shmptr(&dp.ingress_mbuf_region, buf, sizeof(*buf));
-	do_rx_prepend_rx_preamble(net_hdr, completion_data,
-				  rte_pktmbuf_pkt_len(buf) - sizeof(*net_hdr),
-				  buf->hash.rss, csum_type);
-	return net_hdr;
-}
-
 /**
  * rx_send_to_runtime - enqueues a command to an RXQ for a runtime
  * @p: the runtime's proc structure
@@ -92,45 +54,53 @@ bool rx_send_to_runtime(struct proc *p, uint32_t hash, uint64_t cmd,
 	return lrpc_send(&th->rxq, cmd, payload);
 }
 
-static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
+void parse_mbuf(struct rte_mbuf *buf, uint32_t *len, uint32_t *off, uint32_t *csum_type,
+		uint32_t *rss_hash, void **packet)
 {
-	struct lrpc_chan_out *chan = &iok_as_primary_rxq[p->seciok_index];
-	uint32_t len, off, csum_type, rawcmd;
 	uint64_t masked_ol_flags;
-	struct rx_net_hdr *net_hdr;
-	shmptr_t shmptr;
-	uint64_t payload;
 
-	len = rte_pktmbuf_pkt_len(buf);
+	*len = rte_pktmbuf_pkt_len(buf);
 	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
-	RT_BUG_ON(len >= (1u << 16u));
+	RT_BUG_ON(*len >= (1u << 16u));
 
 	masked_ol_flags = buf->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
 	if (masked_ol_flags == RTE_MBUF_F_RX_IP_CKSUM_GOOD)
-		csum_type = CHECKSUM_TYPE_UNNECESSARY;
+		*csum_type = CHECKSUM_TYPE_UNNECESSARY;
 	else
-		csum_type = CHECKSUM_TYPE_NEEDED;
+		*csum_type = CHECKSUM_TYPE_NEEDED;
 	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
-	RT_BUG_ON(csum_type >= (1u << 1u));
+	RT_BUG_ON(*csum_type >= (1u << 1u));
 
-	net_hdr = (struct rx_net_hdr *) rte_pktmbuf_prepend(buf,
-			(uint16_t) sizeof(*net_hdr));
-	RTE_ASSERT(net_hdr != NULL);
-	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, net_hdr, sizeof(*net_hdr));
+	*rss_hash = buf->hash.rss;
+
+	*packet = (char *) buf->buf_addr + buf->data_off;
+
+	*off = (uint32_t) ((uint64_t) (*packet) - (uint64_t) buf);
+	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(*off >= (1u << 13u));
+}
+
+static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
+{
+	struct lrpc_chan_out *chan = &iok_as_primary_rxq[p->seciok_index];
+	uint32_t len, off, csum_type, rss_hash, rawcmd;
+	void *packet;
+	shmptr_t shmptr;
+	uint64_t payload;
+
+	parse_mbuf(buf, &len, &off, &csum_type, &rss_hash, &packet);
+
+	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, packet, len);
 	// IOK2IOK_RXPKT_MAKE_PAYLOAD assumption
 	RT_BUG_ON(shmptr > UINT32_MAX);
-
-	off = (uint64_t) net_hdr - (uint64_t) buf;
-	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
-	RT_BUG_ON(off >= (1u << 14u));
 
 	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, csum_type);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_LEN(rawcmd) != len);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_OFF(rawcmd) != off);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) != csum_type);
-	payload = IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, buf->hash.rss);
+	payload = IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss_hash);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
-	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != buf->hash.rss);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != rss_hash);
 
 	if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->ip_addr), payload))) {
 		log_err_ratelimited("rx: failed to send to secondary iokernel");
@@ -139,13 +109,26 @@ static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 	return true;
 }
 
-static bool rx_send_pkt_to_runtime(struct proc *p, struct rx_net_hdr *hdr)
+static bool rx_send_pkt_to_runtime(struct proc *p, struct rte_mbuf *buf)
 {
+	uint32_t len, off, csum_type, rss_hash, rawcmd;
+	void *packet;
 	shmptr_t shmptr;
+	uint64_t payload;
 
 	RT_BUG_ON(unlikely(p->is_remote));
-	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, hdr, sizeof(*hdr));
-	return rx_send_to_runtime(p, hdr->rss_hash, RX_NET_RECV, shmptr);
+
+	parse_mbuf(buf, &len, &off, &csum_type, &rss_hash, &packet);
+	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, csum_type);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_LEN(rawcmd) != len);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_OFF(rawcmd) != off);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) != csum_type);
+
+	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, packet, sizeof(*packet));
+	payload = IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss_hash);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != rss_hash);
+	return rx_send_to_runtime(p, rss_hash, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
 }
 
 static bool azure_arp_response(struct rte_mbuf *buf)
@@ -178,7 +161,6 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 	struct rte_ether_hdr *ptr_mac_hdr;
 	struct rte_ether_addr *ptr_dst_addr;
 	struct rte_ipv4_hdr *iphdr;
-	struct rx_net_hdr *net_hdr;
 	uint16_t ether_type;
 	uint32_t dst_ip;
 
@@ -203,27 +185,27 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 
 		// Azure's faked ARP replies always go to the default NIC
 		// address, so broadcast them to all runtimes.
-		if (cfg.azure_arp_mode &&
-		    arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
-			bool success;
-			int n_sent = 0;
-			net_hdr = rx_prepend_rx_preamble(buf);
-			for (int i = 0; i < dp.nr_clients; i++) {
-				success = rx_send_pkt_to_runtime(dp.clients[i], net_hdr);
-				if (success) {
-					n_sent++;
-				} else {
-					STAT_INC(RX_BROADCAST_FAIL, 1);
-					log_debug_ratelimited("rx: failed to enqueue broadcast "
-					                      "packet to runtime");
-				}
-			}
-			if (n_sent == 0)
-				rte_pktmbuf_free(buf);
-			else
-				rte_mbuf_refcnt_update(buf, n_sent - 1);
-			return;
-		}
+		// if (cfg.azure_arp_mode &&
+		//     arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
+		// 	bool success;
+		// 	int n_sent = 0;
+		// 	net_hdr = rx_prepend_rx_preamble(buf);
+		// 	for (int i = 0; i < dp.nr_clients; i++) {
+		// 		success = rx_send_pkt_to_runtime(dp.clients[i], net_hdr);
+		// 		if (success) {
+		// 			n_sent++;
+		// 		} else {
+		// 			STAT_INC(RX_BROADCAST_FAIL, 1);
+		// 			log_debug_ratelimited("rx: failed to enqueue broadcast "
+		// 			                      "packet to runtime");
+		// 		}
+		// 	}
+		// 	if (n_sent == 0)
+		// 		rte_pktmbuf_free(buf);
+		// 	else
+		// 		rte_mbuf_refcnt_update(buf, n_sent - 1);
+		// 	return;
+		// }
 	} else {
 		log_debug("unrecognized ether type");
 		goto fail_free;
@@ -250,9 +232,7 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 		return;
 	}
 
-	net_hdr = rx_prepend_rx_preamble(buf);
-
-	if (!rx_send_pkt_to_runtime(p, net_hdr)) {
+	if (!rx_send_pkt_to_runtime(p, buf)) {
 		STAT_INC(RX_UNICAST_FAIL, 1);
 		log_warn_ratelimited("rx: failed to send packet to runtime");
 		goto fail_free;
@@ -279,10 +259,9 @@ static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
 {
 	int i;
 	uint64_t cmd, completion_data;
-	uint32_t ip_addr, rss, len, off, csum_type, rawcmd;
+	uint32_t ip_addr, rss, off, rawcmd;
 	unsigned long payload;
 	shmptr_t shmptr;
-	struct rx_net_hdr *hdr;
 	bool success;
 	struct proc *p;
 	int ret;
@@ -297,23 +276,19 @@ static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
 		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
 		RT_BUG_ON(ret < 0);
 
-		shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
-		hdr = shmptr_to_ptr(&dp.ingress_mbuf_region, shmptr, sizeof(*hdr));
 		rss = IOK2IOK_RXPKT_GET_RSS(payload);
 
-		len = IOK2IOK_RXPKT_GET_LEN(rawcmd);
-		csum_type = IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd);
-		off = IOK2IOK_RXPKT_GET_OFF(rawcmd);
-		completion_data = ((uint64_t) shmptr) - ((uint64_t) off);
-
-		do_rx_prepend_rx_preamble(hdr, completion_data, len, rss, csum_type);
-		success = rx_send_pkt_to_runtime(p, hdr);
+		success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
 		if (!success) {
+			shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
+			off = IOK2IOK_RXPKT_GET_OFF(rawcmd);
+			completion_data = ((uint64_t) shmptr) - ((uint64_t) off);
+
 			STAT_INC(RX_UNICAST_FAIL, 1);
 			STAT_INC(RX_UNHANDLED, 1);
 			success = lrpc_send(&iok_as_secondary_txcmdq[cfg.seciok_index],
 					    IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0),
-					    hdr->completion_data);
+					    completion_data);
 			RT_BUG_ON(!success);
 			log_warn_ratelimited("rx: failed to send packet to runtime");
 		}

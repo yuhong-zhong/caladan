@@ -105,41 +105,48 @@ static void net_rx_send_completion(unsigned long completion_data)
 	putk();
 }
 
-static struct mbuf *net_rx_alloc_mbuf(struct rx_net_hdr *hdr)
+static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 {
+	uint32_t len, off, csum_type, rss_hash;
+	shmptr_t shmptr;
+	void *packet;
 	struct mbuf *m;
 	void *buf;
 
-// #ifdef NO_CACHE_COHERENCE
-// 	batch_clflushopt(hdr, sizeof(*hdr));
-// 	_mm_sfence();
-// #endif
+	len = IOK2IOK_RXPKT_GET_LEN(aux);
+	off = IOK2IOK_RXPKT_GET_OFF(aux);
+	csum_type = IOK2IOK_RXPKT_GET_CSUM_TYPE(aux);
+
+	rss_hash = IOK2IOK_RXPKT_GET_RSS(payload);
+	shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
+
+	packet = shmptr_to_ptr(&netcfg.rx_region, shmptr, len);
 
 	/* allocate the buffer to store the payload */
-	m = smalloc(hdr->len + MBUF_HEAD_LEN);
+	m = smalloc(len + MBUF_HEAD_LEN);
 	if (unlikely(!m))
 		goto out;
 
 	buf = (unsigned char *)m + MBUF_HEAD_LEN;
 
 // #ifdef NO_CACHE_COHERENCE
-// 	batch_clflushopt(hdr->payload, hdr->len);
+// 	batch_clflushopt(packet, len);
 // 	_mm_sfence();
 // #endif
 
 	/* copy the payload and release the buffer back to the iokernel */
-	memcpy(buf, hdr->payload, hdr->len);
+	memcpy(buf, packet, len);
 
-	mbuf_init(m, buf, hdr->len, 0);
-	m->len = hdr->len;
-	m->csum_type = hdr->csum_type;
-	m->csum = hdr->csum;
-	m->rss_hash = hdr->rss_hash;
+	mbuf_init(m, buf, len, 0);
+	m->len = len;
+	m->csum_type = csum_type;
+	m->csum = 0;
+	m->rss_hash = rss_hash;
 
 	m->release = (void (*)(struct mbuf *))sfree;
 
 out:
-	net_rx_send_completion(hdr->completion_data);
+	net_rx_send_completion(((uint64_t) shmptr) - ((uint64_t) off));
 	return m;
 }
 
@@ -272,22 +279,21 @@ void net_rx_batch(struct mbuf **ms, unsigned int nr)
 
 static void iokernel_softirq_poll(struct kthread *k)
 {
-	struct rx_net_hdr *hdr;
 	struct tx_net_hdr *tx_hdr;
 	struct mbuf *m;
-	uint64_t cmd;
+	uint64_t cmd, rx_cmd;
+	uint32_t aux;
 	unsigned long payload;
 
 	while (true) {
 		if (!lrpc_recv(&k->rxq, &cmd, &payload))
 			break;
 
-		switch (cmd) {
+		rx_cmd = RX_GET_CMD(cmd);
+		aux = (uint32_t) RX_GET_AUX(cmd);
+		switch (rx_cmd) {
 		case RX_NET_RECV:
-			hdr = shmptr_to_ptr(&netcfg.rx_region,
-					    (shmptr_t)payload,
-					    MBUF_DEFAULT_LEN);
-			m = net_rx_alloc_mbuf(hdr);
+			m = net_rx_alloc_mbuf(aux, payload);
 			if (unlikely(!m)) {
 				log_warn_ratelimited("net: failed to alloc mbuf");
 				STAT(DROPS)++;

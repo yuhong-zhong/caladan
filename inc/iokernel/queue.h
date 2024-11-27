@@ -6,16 +6,6 @@
 
 #include <base/stddef.h>
 
-/* preamble to ingress network packets */
-struct rx_net_hdr {
-	unsigned long completion_data; /* a tag to help complete the request */
-	unsigned int len;	/* the length of the payload */
-	unsigned int rss_hash;	/* the HW RSS 5-tuple hash */
-	unsigned int csum_type; /* the type of checksum */
-	unsigned int csum;	/* 16-bit one's complement */
-	char	     payload[];	/* packet data */
-};
-
 /* preamble to egress network packets */
 struct tx_net_hdr {
 	unsigned int len;	/* the length of the payload */
@@ -56,12 +46,17 @@ enum {
  * These queues multiplex several different types of requests.
  */
 enum {
-	RX_NET_RECV = 0,	/* points to a struct rx_net_hdr */
+	RX_NET_RECV = 0,	/* points to a struct packet */
 	RX_NET_COMPLETE,	/* contains tx_net_hdr.completion_data */
 	RX_REFILL_BUFS,		/* runtime should replenish RX work queues */
 	RX_CALL_NR,		/* number of commands */
 };
 
+BUILD_ASSERT(RX_CALL_NR < (1ul << 2ul));
+
+#define RX_MAKE_CMD(cmd, aux) (((uint64_t) cmd) | (((uint64_t) aux) << 2ul))
+#define RX_GET_CMD(cmd) (cmd & 0x3ul)
+#define RX_GET_AUX(cmd) (cmd >> 2ul)
 
 /*
  * TX packet queues: RUNTIMES -> IOKERNEL
@@ -79,6 +74,6 @@ enum {
  * much faster by the IOKERNEL than packets, so no HOL blocking.
  */
 enum {
-	TXCMD_NET_COMPLETE = 0,	/* contains rx_net_hdr.completion_data */
+	TXCMD_NET_COMPLETE = 0,	/* contains completion_data */
 	TXCMD_NR,		/* number of commands */
 };

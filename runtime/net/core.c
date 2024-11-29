@@ -129,13 +129,11 @@ static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 
 	buf = (unsigned char *)m + MBUF_HEAD_LEN;
 
-// #ifdef NO_CACHE_COHERENCE
-// 	batch_clflushopt(packet, len);
-// 	_mm_sfence();
-// #endif
-
 	/* copy the payload and release the buffer back to the iokernel */
 	memcpy(buf, packet, len);
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(packet, len);
+#endif
 
 	mbuf_init(m, buf, len, 0);
 	m->len = len;

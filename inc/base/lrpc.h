@@ -246,16 +246,16 @@ static inline void msg_in_sync(struct msg_chan_in *chan)
 
 	chan->new_recv_head = MAX(ACCESS_ONCE(*chan->recv_head_wb), chan->new_recv_head);
 	for (i = 0; i < LRPC_IN_SYNC_BURST_SIZE; ++i) {
-		m = &chan->tbl[(chan->new_recv_head + i) & (chan->size - 1)];
+		m = &chan->tbl[(chan->new_recv_head) & (chan->size - 1)];
 		cmd = ACCESS_ONCE(m->cmd);
-		parity = ((chan->new_recv_head + i) & chan->size) ?
+		parity = ((chan->new_recv_head) & chan->size) ?
 			 0 : LRPC_DONE_PARITY;
 
 		if ((cmd & LRPC_DONE_PARITY) != parity) {
 			clflushopt(m);
 			break;
 		}
-		chan->new_recv_head++;
+		chan->new_recv_head += 2;
 	}
 }
 #endif

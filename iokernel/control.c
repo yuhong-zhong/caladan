@@ -50,6 +50,13 @@ int data_to_control_efd;
 static struct lrpc_chan_out lrpc_control_to_data;
 static struct lrpc_chan_in lrpc_data_to_control;
 
+static DEFINE_BITMAP(iok2iok_proc_ids, IOKERNEL_MAX_PROC);
+
+/* primary iokernel */
+struct proc *iok2iok_proc_as_pmyiok[IOKERNEL_MAX_PROC];
+/* secondary iokernel */
+struct proc *iok2iok_proc_as_seciok[MAX_NR_IOK2IOK][IOKERNEL_MAX_PROC];
+
 struct iokernel_info *iok_info;
 
 /* iok2iok communication */
@@ -359,6 +366,8 @@ static void control_destroy_proc(struct proc *p)
 	if (p->has_vfio_directpath)
 		release_directpath_ctx(p);
 
+	bitmap_clear(iok2iok_proc_ids, p->iok2iok_index);
+	iok2iok_proc_as_pmyiok[p->iok2iok_index] = NULL;
 	nr_clients--;
 	if (!cfg.is_secondary) {
 		// munmap(p->region.base, p->region.len);
@@ -465,6 +474,14 @@ static void control_add_client(void)
 		RT_BUG_ON(ret != sizeof(p->lrpc_control_fd));
 		ret = read(fd, &p->seciok_index, sizeof(p->seciok_index));
 		RT_BUG_ON(ret != sizeof(p->seciok_index));
+
+		p->iok2iok_index = bitmap_find_next_cleared(iok2iok_proc_ids, IOKERNEL_MAX_PROC, 0);
+		RT_BUG_ON(p->iok2iok_index == IOKERNEL_MAX_PROC);
+		bitmap_set(iok2iok_proc_ids, p->iok2iok_index);
+		iok2iok_proc_as_pmyiok[p->iok2iok_index] = p;
+
+		ret = write(fd, &p->iok2iok_index, sizeof(p->iok2iok_index));
+		RT_BUG_ON(ret != sizeof(p->iok2iok_index));
 	}
 
 	ret = epoll_ctl_add(fd, p);
@@ -537,6 +554,7 @@ static void control_seciok_add_client(void)
 	bool succeed;
 	unsigned long payload;
 	int lrpc_control_fd;
+	uint16_t iok2iok_proc_index;
 	// int mem_fd;
 
 	fd = accept(controlfd, NULL, NULL);
@@ -610,6 +628,12 @@ static void control_seciok_add_client(void)
 	RT_BUG_ON(cmd != IOK2IOK_CMD_LRPC_FD);
 	lrpc_control_fd = (int) payload;
 
+	do {
+		succeed = msg_recv(chan_in, &cmd, &payload);
+	} while (!succeed);
+	RT_BUG_ON(cmd != IOK2IOK_CMD_PROC_IDX);
+	iok2iok_proc_index = (uint16_t) payload;
+
 	client_shm_buf = cxl_get_client(client_cxl_offset);
 	RT_BUG_ON(client_shm_buf == NULL);
 
@@ -629,6 +653,8 @@ static void control_seciok_add_client(void)
 	nr_clients++;
 	p->control_fd = fd;
 	p->lrpc_control_fd = lrpc_control_fd;
+	p->iok2iok_index = iok2iok_proc_index;
+	iok2iok_proc_as_seciok[cfg.seciok_index][iok2iok_proc_index] = p;
 
 	sched_attach_proc(p);
 
@@ -679,6 +705,7 @@ static void control_seciok_remove_client(struct proc *p)
 	if (p->attach_fail)
 		kill(p->pid, SIGINT);
 
+	iok2iok_proc_as_seciok[cfg.seciok_index][p->iok2iok_index] = NULL;
 	nr_clients--;
 	free(p->overflow_queue);
 	free(p);
@@ -776,6 +803,7 @@ static void handle_add_client_lrpc(int seciok_index)
 {
 	struct sockaddr_un addr;
 	uint64_t cxl_shm_offset, cxl_shm_len;
+	uint16_t iok2iok_proc_index;
 	ssize_t ret;
 	int fd;
 	bool succeed;
@@ -862,6 +890,15 @@ static void handle_add_client_lrpc(int seciok_index)
 	}
 
 	succeed = msg_send(out_chan, IOK2IOK_CMD_LRPC_FD, (unsigned long) fd);
+	RT_BUG_ON(!succeed);
+
+	ret = read(fd, &iok2iok_proc_index, sizeof(iok2iok_proc_index));
+	if (ret != sizeof(iok2iok_proc_index)) {
+		log_err("handle_add_client_lrpc: read(iok2iok_proc_index) failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	succeed = msg_send(out_chan, IOK2IOK_CMD_PROC_IDX, (unsigned long) iok2iok_proc_index);
 	RT_BUG_ON(!succeed);
 }
 

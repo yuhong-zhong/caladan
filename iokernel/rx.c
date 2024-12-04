@@ -103,7 +103,7 @@ static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != rss_hash);
 
-	log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->ip_addr), payload));
+	log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->iok2iok_index), payload));
 	if (unlikely(!success)) {
 		log_err_ratelimited("rx: failed to send to secondary iokernel");
 		return false;
@@ -262,12 +262,12 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
 {
 	int i;
 	uint64_t cmd, completion_data;
-	uint32_t ip_addr, rss, off, rawcmd;
+	uint32_t rss, off, rawcmd;
+	uint16_t iok2iok_proc_index;
 	unsigned long payload;
 	shmptr_t shmptr;
 	bool success;
 	struct proc *p;
-	int ret;
 
 	for (i = 0; i < n; i++) {
 		log_info_duration(success = msg_recv(chan, &cmd, &payload));
@@ -275,10 +275,8 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
 			break;
 
 		rawcmd = IOK2IOK_GET_RAWCMD(cmd);
-		ip_addr = IOK2IOK_GET_IP(cmd);
-
-		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
-		RT_BUG_ON(ret < 0);
+		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
+		p = iok2iok_proc_as_seciok[cfg.seciok_index][iok2iok_proc_index];
 
 		rss = IOK2IOK_RXPKT_GET_RSS(payload);
 

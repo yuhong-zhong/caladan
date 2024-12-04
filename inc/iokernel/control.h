@@ -68,14 +68,15 @@ enum {
 	IOK2IOK_CMD_CXL_LEN,
 	IOK2IOK_CMD_STATUS_CODE,
 	IOK2IOK_CMD_LRPC_FD,
+	IOK2IOK_CMD_PROC_IDX,
 	IOK2IOK_CMD_REMOVE_CLIENT,
 	IOK2IOK_CMD_NR,
 };
 
 #define IOK2IOK_RAWCMD_BITS 31ul
 #define IOK2IOK_GET_RAWCMD(cmd) ((cmd) & ((1ul << IOK2IOK_RAWCMD_BITS) - 1ul))
-#define IOK2IOK_GET_IP(cmd) ((cmd) >> IOK2IOK_RAWCMD_BITS)
-#define IOK2IOK_MAKE_CMD(rawcmd, ip) ((((uint64_t) ip) << IOK2IOK_RAWCMD_BITS) | ((uint64_t) rawcmd))
+#define IOK2IOK_GET_PROC_IDX(cmd) ((cmd) >> IOK2IOK_RAWCMD_BITS)
+#define IOK2IOK_MAKE_CMD(rawcmd, proc_idx) ((((uint64_t) proc_idx) << IOK2IOK_RAWCMD_BITS) | ((uint64_t) rawcmd))
 
 // assume that packet length is < 64KB
 #define IOK2IOK_TXPKT_MAKE_RAWCMD(len, olflags) (((uint32_t) len) | (((uint32_t) olflags) << 16u))

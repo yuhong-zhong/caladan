@@ -115,7 +115,7 @@ static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned lon
 		RT_BUG_ON(cfg.is_secondary);
 		chan = &iok_as_primary_rxcmdq[p->seciok_index];
 
-		log_info_duration(succeeded = msg_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->ip_addr), completion_data));
+		log_info_duration(succeeded = msg_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->iok2iok_index), completion_data));
 		if (unlikely(!succeeded)) {
 			log_err_ratelimited("tx: failed to send completion to secondary iokernel");
 			proc_put(p);
@@ -189,10 +189,10 @@ static int drain_overflow_queue(struct proc *p, int n)
 static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n)
 {
 	uint64_t cmd, raw_cmd;
-	uint32_t ip_addr;
+	uint16_t iok2iok_proc_index;
 	unsigned long completion_data;
 	struct proc *p;
-	int i, ret;
+	int i;
 	struct tx_net_hdr *hdr;
 	struct thread *th;
 
@@ -203,11 +203,11 @@ static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n)
 			break;
 
 		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
-		ip_addr = IOK2IOK_GET_IP(cmd);
+		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
 		RT_BUG_ON(raw_cmd != RX_NET_COMPLETE);
 
-		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
-		RT_BUG_ON(ret < 0);
+		p = iok2iok_proc_as_seciok[cfg.seciok_index][iok2iok_proc_index];
+		RT_BUG_ON(!p);
 
 		// TODO: a hack based on the knowledge that completion_data is hdr
 		hdr = shmptr_to_ptr(&p->region, completion_data, sizeof(*hdr));
@@ -291,12 +291,12 @@ static int tx_drain_queue_from_seciok(struct msg_chan_in *chan, int n,
 				      struct tx_net_hdr **hdrs, unsigned short *lens,
 				      unsigned short *olflags, struct proc **procs)
 {
-	int i, ret;
+	int i;
 	struct proc *p;
 
 	for (i = 0; i < n; i++) {
 		uint64_t cmd, raw_cmd;
-		uint32_t ip_addr;
+		uint16_t iok2iok_proc_index;
 		unsigned long payload;
 		bool success;
 
@@ -305,13 +305,13 @@ static int tx_drain_queue_from_seciok(struct msg_chan_in *chan, int n,
 			break;
 
 		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
-		ip_addr = IOK2IOK_GET_IP(cmd);
+		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
 
 		lens[i] = IOK2IOK_TXPKT_GET_LEN(raw_cmd);
 		olflags[i] = IOK2IOK_TXPKT_GET_OLFLAGS(raw_cmd);
 
-		ret = rte_hash_lookup_data(dp.ip_to_proc, &ip_addr, (void **) &p);
-		RT_BUG_ON(ret < 0);
+		p = iok2iok_proc_as_pmyiok[iok2iok_proc_index];
+		RT_BUG_ON(!p);
 		RT_BUG_ON(!p->is_remote);
 
 		hdrs[i] = shmptr_to_ptr(&p->region, payload,
@@ -327,7 +327,7 @@ static void txpkt_send_to_pmyiok(struct msg_chan_out *chan,
 {
 	int i;
 	shmptr_t shmptr;
-	uint32_t ip_addr;
+	uint16_t iok2iok_proc_index;
 	struct proc *p;
 	bool success;
 
@@ -336,13 +336,13 @@ static void txpkt_send_to_pmyiok(struct msg_chan_out *chan,
 			prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
 
 		p = threads[i]->p;
-		ip_addr = p->ip_addr;
+		iok2iok_proc_index = p->iok2iok_index;
 
 		hdrs[i]->private_seciok = (unsigned long) threads[i];
 		proc_get(p);
 
 		shmptr = ptr_to_shmptr(&p->region, (void *) hdrs[i], sizeof(*hdrs[i]));
-		log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), ip_addr), shmptr));
+		log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), iok2iok_proc_index), shmptr));
 		if (unlikely(!success)) {
 			log_warn_ratelimited("txpkt_send_to_pmyiok: failed to send to primary iokernel");
 			break;

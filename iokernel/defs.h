@@ -63,6 +63,11 @@ extern bool vfio_prealloc_rmp;
 BUILD_ASSERT(NCPU < UINT16_MAX);
 BUILD_ASSERT(IOKERNEL_MAX_PROC < UINT16_MAX);
 
+/* primary iokernel */
+extern struct proc *iok2iok_proc_as_pmyiok[IOKERNEL_MAX_PROC];
+/* secondary iokernel */
+extern struct proc *iok2iok_proc_as_seciok[MAX_NR_IOK2IOK][IOKERNEL_MAX_PROC];
+
 /*
  * Process Support
  */
@@ -197,6 +202,7 @@ struct proc {
 
 	/* COLD */
 	uint16_t 	dp_clients_idx;
+	uint16_t 	iok2iok_index;
 
 	/* network data */
 	uint32_t		ip_addr;

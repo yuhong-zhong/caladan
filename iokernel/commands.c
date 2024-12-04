@@ -42,7 +42,6 @@ static int commands_drain_queue_from_seciok(struct msg_chan_in *chan, unsigned l
 
 	for (i = 0; i < n; i++) {
 		uint64_t cmd, raw_cmd;
-		// uint32_t ip_addr;
 		unsigned long payload;
 		bool success;
 
@@ -51,7 +50,6 @@ static int commands_drain_queue_from_seciok(struct msg_chan_in *chan, unsigned l
 			break;
 
 		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
-		// ip_addr = IOK2IOK_GET_IP(cmd);
 
 		RT_BUG_ON(raw_cmd != TXCMD_NET_COMPLETE);
 		bufs[n_bufs++] = payload;

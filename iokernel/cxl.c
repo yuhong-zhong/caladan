@@ -167,11 +167,11 @@ int cxl_init(void)
         RT_BUG_ON((uint64_t) cxl_buf % PGSIZE_2MB != 0);
         if (!cfg.is_secondary) {
                 memset(cxl_buf, 0, iok_cxl_size);
-#ifdef NO_CACHE_COHERENCE
-                batch_clwb(cxl_buf, iok_cxl_size);
-                _mm_sfence();
-#endif
         }
+#ifdef NO_CACHE_COHERENCE
+        batch_clflushopt(cxl_buf, iok_cxl_size);
+        _mm_mfence();
+#endif
         close(fd);
 
         spin_lock_init(&lock);

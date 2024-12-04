@@ -82,11 +82,12 @@ void parse_mbuf(struct rte_mbuf *buf, uint32_t *len, uint32_t *off, uint32_t *cs
 
 static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 {
-	struct lrpc_chan_out *chan = &iok_as_primary_rxq[p->seciok_index];
+	struct msg_chan_out *chan = &iok_as_primary_rxq[p->seciok_index];
 	uint32_t len, off, csum_type, rss_hash, rawcmd;
 	void *packet;
 	shmptr_t shmptr;
 	uint64_t payload;
+	bool success;
 
 	parse_mbuf(buf, &len, &off, &csum_type, &rss_hash, &packet);
 
@@ -102,7 +103,8 @@ static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != rss_hash);
 
-	if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->ip_addr), payload))) {
+	log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->ip_addr), payload));
+	if (unlikely(!success)) {
 		log_err_ratelimited("rx: failed to send to secondary iokernel");
 		return false;
 	}
@@ -207,7 +209,7 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 		// 	return;
 		// }
 	} else {
-		log_debug("unrecognized ether type");
+		// log_warn_ratelimited("rx: unsupported ether type %x", ether_type);
 		goto fail_free;
 	}
 
@@ -220,6 +222,7 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 		    azure_arp_response(buf))
 			return;
 
+		// log_warn_ratelimited("rx: failed to find runtime for IP 0x%x", dst_ip);
 		STAT_INC(RX_UNREGISTERED_MAC, 1);
 		goto fail_free;
 	}
@@ -255,7 +258,7 @@ fail_free:
 	STAT_INC(RX_UNHANDLED, 1);
 }
 
-static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
+static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
 {
 	int i;
 	uint64_t cmd, completion_data;
@@ -267,7 +270,8 @@ static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
 	int ret;
 
 	for (i = 0; i < n; i++) {
-		if (!lrpc_recv(chan, &cmd, &payload))
+		log_info_duration(success = msg_recv(chan, &cmd, &payload));
+		if (!success)
 			break;
 
 		rawcmd = IOK2IOK_GET_RAWCMD(cmd);
@@ -286,9 +290,9 @@ static int rx_burst_from_pmyiok(struct lrpc_chan_in *chan, int n)
 
 			STAT_INC(RX_UNICAST_FAIL, 1);
 			STAT_INC(RX_UNHANDLED, 1);
-			success = lrpc_send(&iok_as_secondary_txcmdq[cfg.seciok_index],
-					    IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0),
-					    completion_data);
+			success = msg_send(&iok_as_secondary_txcmdq[cfg.seciok_index],
+					   IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0),
+					   completion_data);
 			RT_BUG_ON(!success);
 			log_warn_ratelimited("rx: failed to send packet to runtime");
 		}
@@ -313,7 +317,7 @@ bool rx_burst(void)
 	}
 
 	/* retrieve packets from NIC queue */
-	nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE);
+	log_info_duration(nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE));
 	STAT_INC(RX_PULLED, nb_rx);
 	if (nb_rx > 0)
 		log_debug("rx: received %d packets on port %d", nb_rx, dp.port);

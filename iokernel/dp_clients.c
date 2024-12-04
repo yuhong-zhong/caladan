@@ -102,6 +102,8 @@ static void dp_clients_remove_client(struct proc *p)
 {
 	int ret;
 
+	log_info("dp_clients: removing client %d", p->pid);
+
 	dp.clients[p->dp_clients_idx] = dp.clients[--dp.nr_clients];
 	dp.clients[p->dp_clients_idx]->dp_clients_idx = p->dp_clients_idx;
 
@@ -137,6 +139,8 @@ static void dp_clients_remove_client(struct proc *p)
 	if (!p->is_remote)
 		sched_detach_proc(p);
 	proc_put(p);
+
+	log_info("dp_clients: removed client %d", p->pid);
 }
 
 /*

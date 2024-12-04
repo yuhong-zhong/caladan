@@ -98,7 +98,8 @@ static void tx_prepare_tx_mbuf(struct rte_mbuf *buf, struct tx_net_hdr *net_hdr,
  */
 static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned long completion_data)
 {
-	struct lrpc_chan_out *chan;
+	struct msg_chan_out *chan;
+	bool succeeded;
 
 	/* during initialization, the mbufs are enqueued for the first time */
 	if (unlikely(!p))
@@ -114,8 +115,10 @@ static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned lon
 		RT_BUG_ON(cfg.is_secondary);
 		chan = &iok_as_primary_rxcmdq[p->seciok_index];
 
-		if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->ip_addr), completion_data))) {
+		log_info_duration(succeeded = msg_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->ip_addr), completion_data));
+		if (unlikely(!succeeded)) {
 			log_err_ratelimited("tx: failed to send completion to secondary iokernel");
+			proc_put(p);
 			return false;
 		}
 		goto success;
@@ -183,7 +186,7 @@ static int drain_overflow_queue(struct proc *p, int n)
 	return i;
 }
 
-static int tx_drain_completions_from_pmyiok(struct lrpc_chan_in *chan, int n)
+static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n)
 {
 	uint64_t cmd, raw_cmd;
 	uint32_t ip_addr;
@@ -194,7 +197,9 @@ static int tx_drain_completions_from_pmyiok(struct lrpc_chan_in *chan, int n)
 	struct thread *th;
 
 	for (i = 0; i < n; ++i) {
-		if (!lrpc_recv(chan, &cmd, &completion_data))
+		bool success;
+		log_info_duration(success = msg_recv(chan, &cmd, &completion_data));
+		if (!success)
 			break;
 
 		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
@@ -282,7 +287,7 @@ static int tx_drain_queue(struct thread *t, int n,
 	return i;
 }
 
-static int tx_drain_queue_from_seciok(struct lrpc_chan_in *chan, int n,
+static int tx_drain_queue_from_seciok(struct msg_chan_in *chan, int n,
 				      struct tx_net_hdr **hdrs, unsigned short *lens,
 				      unsigned short *olflags, struct proc **procs)
 {
@@ -293,8 +298,10 @@ static int tx_drain_queue_from_seciok(struct lrpc_chan_in *chan, int n,
 		uint64_t cmd, raw_cmd;
 		uint32_t ip_addr;
 		unsigned long payload;
+		bool success;
 
-		if (!lrpc_recv(chan, &cmd, &payload))
+		log_info_duration(success = msg_recv(chan, &cmd, &payload));
+		if (!success)
 			break;
 
 		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
@@ -315,13 +322,14 @@ static int tx_drain_queue_from_seciok(struct lrpc_chan_in *chan, int n,
 	return i;
 }
 
-static void txpkt_send_to_pmyiok(struct lrpc_chan_out *chan,
+static void txpkt_send_to_pmyiok(struct msg_chan_out *chan,
 				 struct tx_net_hdr **hdrs, struct thread **threads, int n)
 {
 	int i;
 	shmptr_t shmptr;
 	uint32_t ip_addr;
 	struct proc *p;
+	bool success;
 
 	for (i = 0; i < n; i++) {
 		if (i + TX_PREFETCH_STRIDE < n)
@@ -334,8 +342,8 @@ static void txpkt_send_to_pmyiok(struct lrpc_chan_out *chan,
 		proc_get(p);
 
 		shmptr = ptr_to_shmptr(&p->region, (void *) hdrs[i], sizeof(*hdrs[i]));
-		if (unlikely(!lrpc_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), ip_addr),
-					shmptr))) {
+		log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), ip_addr), shmptr));
+		if (unlikely(!success)) {
 			log_warn_ratelimited("txpkt_send_to_pmyiok: failed to send to primary iokernel");
 			break;
 		}
@@ -429,7 +437,7 @@ full:
 	n_bufs = n_pkts;
 
 	/* finally, send the packets on the wire */
-	ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts);
+	log_info_duration(ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts));
 	log_debug("tx: transmitted %d packets on port %d", ret, dp.port);
 
 	/* apply back pressure if the NIC TX ring was full */

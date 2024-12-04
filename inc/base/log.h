@@ -132,3 +132,48 @@ enum {
 #define panic(fmt, ...)					\
 	do {logk(LOG_EMERG, fmt, ##__VA_ARGS__);	\
 	    init_shutdown(EXIT_FAILURE);} while (0)
+
+#define log_info_callrate()				\
+({							\
+	static uint64_t __last_us = 0;			\
+	static uint64_t __suppressed = 0;		\
+	uint64_t __cur_us = microtime();		\
+	if (__cur_us - __last_us >= ONE_SECOND * 2) {	\
+		if (__suppressed) {			\
+			logk(LOG_INFO, "%s:%d %s() called %ld times per second", \
+			     __FILE__, __LINE__, __func__, __suppressed * ONE_SECOND / (__cur_us - __last_us)); \
+			__suppressed = 0;		\
+		}					\
+		__last_us = __cur_us;			\
+	} else						\
+		__suppressed++;				\
+})
+
+#define log_info_duration(func)				\
+({							\
+	static uint64_t __duration_last_ns = 0;		\
+	static uint64_t __duration_count = 0;		\
+	static uint64_t __duration_sum = 0;		\
+	volatile uint64_t __duration_start_ns = nanotime(); \
+	_mm_lfence();					\
+	func;						\
+	_mm_lfence();					\
+	volatile uint64_t __duration_end_ns = nanotime(); \
+	uint64_t __duration_ns = __duration_end_ns - __duration_start_ns; \
+	__duration_count++;				\
+	__duration_sum += __duration_ns;		\
+	if (__duration_end_ns - __duration_last_ns >= ONE_SECOND * 2000) { \
+		logk(LOG_INFO, "%s:%d\t[%s()]\tcalled %ld/s,\t%ld ns", \
+			__FILE__, __LINE__, __func__, __duration_count * ONE_SECOND * 1000ul / (__duration_end_ns - __duration_last_ns), \
+			(__duration_sum / __duration_count)); \
+		__duration_count = 0;			\
+		__duration_sum = 0;			\
+		__duration_last_ns = __duration_end_ns;	\
+	}						\
+})
+
+#undef log_info_callrate
+#define log_info_callrate() do {} while (0)
+
+#undef log_info_duration
+#define log_info_duration(func) func

@@ -129,11 +129,17 @@ static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 
 	buf = (unsigned char *)m + MBUF_HEAD_LEN;
 
-	/* copy the payload and release the buffer back to the iokernel */
-	memcpy(buf, packet, len);
 #ifdef NO_CACHE_COHERENCE
 	batch_clflushopt(packet, len);
+	_mm_mfence();
 #endif
+
+	/* copy the payload and release the buffer back to the iokernel */
+	memcpy(buf, packet, len);
+
+// #ifdef NO_CACHE_COHERENCE
+// 	batch_clflushopt(packet, len);
+// #endif
 
 	mbuf_init(m, buf, len, 0);
 	m->len = len;
@@ -194,8 +200,10 @@ static void net_rx_one(struct mbuf *m)
 	 */
 
 	llhdr = mbuf_pull_hdr_or_null(m, *llhdr);
-	if (unlikely(!llhdr))
+	if (unlikely(!llhdr)) {
+		log_err_ratelimited("net: failed to pull link layer header");
 		goto drop;
+	}
 
 	/* handle ARP requests */
 	if (ntoh16(llhdr->type) == ETHTYPE_ARP) {
@@ -207,8 +215,11 @@ static void net_rx_one(struct mbuf *m)
 	BUILD_ASSERT(sizeof(llhdr->dhost.addr) == sizeof(netcfg.mac.addr));
 	if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP ||
 		     memcmp(llhdr->dhost.addr, netcfg.mac.addr,
-			    sizeof(llhdr->dhost.addr)) != 0))
+			    sizeof(llhdr->dhost.addr)) != 0)) {
+		log_err_ratelimited("net: dropping unsupported packet, type %x",
+				    ntoh16(llhdr->type));
 		goto drop;
+	}
 
 
 	/*
@@ -217,20 +228,28 @@ static void net_rx_one(struct mbuf *m)
 
 	mbuf_mark_network_offset(m);
 	iphdr = mbuf_pull_hdr_or_null(m, *iphdr);
-	if (unlikely(!iphdr))
+	if (unlikely(!iphdr)) {
+		log_err_ratelimited("net: failed to pull network layer header");
 		goto drop;
+	}
 
 	/* Did HW checksum verification pass? */
 	if (m->csum_type != CHECKSUM_TYPE_UNNECESSARY) {
-		if (chksum_internet(iphdr, sizeof(*iphdr)))
+		if (chksum_internet(iphdr, sizeof(*iphdr))) {
+			log_err_ratelimited("net: checksum failed");
 			goto drop;
+		}
 	}
 
-	if (unlikely(!ip_hdr_supported(iphdr)))
+	if (unlikely(!ip_hdr_supported(iphdr))) {
+		log_err_ratelimited("net: unsupported IP header");
 		goto drop;
+	}
 	len = ntoh16(iphdr->len) - sizeof(*iphdr);
-	if (unlikely(mbuf_length(m) < len))
+	if (unlikely(mbuf_length(m) < len)) {
+		log_err_ratelimited("net: IP packet size does not match header");
 		goto drop;
+	}
 	if (len < mbuf_length(m))
 		mbuf_trim(m, mbuf_length(m) - len);
 
@@ -249,6 +268,7 @@ static void net_rx_one(struct mbuf *m)
 		break;
 
 	default:
+		log_err_ratelimited("net: unsupported IP protocol %d", iphdr->proto);
 		goto drop;
 	}
 

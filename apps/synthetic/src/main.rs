@@ -564,9 +564,13 @@ fn process_result(sched: &RequestSchedule, packets: &mut [Packet]) -> Option<Sch
             (None, _) => never_sent += 1,
             (_, None) => dropped += 1,
             (Some(ref start), Some(ref end)) => {
-                *latencies
-                    .entry(duration_to_ns(*end - *start) / 1000)
-                    .or_insert(0) += 1
+                if *end <= *start {
+                    dropped += 1;
+                } else {
+                    *latencies
+                        .entry(duration_to_ns(*end - *start) / 1000)
+                        .or_insert(0) += 1;
+                }
             }
         }
     }
@@ -684,6 +688,10 @@ fn run_client_worker(
                 Ok((mut idx, tsc)) => {
                     if use_ordering {
                         idx = i;
+                    }
+                    if (idx as usize) >= receive_times.len() {
+                        // println!("Received out-of-bounds index {}", idx);
+                        continue;
                     }
                     receive_times[idx] = Some((Instant::now(), tsc));
                 }

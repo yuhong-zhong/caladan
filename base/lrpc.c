@@ -6,6 +6,68 @@
 
 #include <base/lrpc.h>
 
+bool msg_send(struct msg_chan_out *chan, uint64_t cmd,
+	      unsigned long payload)
+{
+	struct lrpc_msg *dst;
+
+	assert(!(cmd & LRPC_DONE_PARITY));
+
+	if (unlikely(chan->send_head - chan->send_tail >= chan->size)) {
+		chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
+		if (chan->send_head - chan->send_tail == chan->size) {
+#ifdef NO_CACHE_COHERENCE
+			clflushopt(chan->recv_head_wb);
+#endif
+			return false;
+		}
+	}
+
+	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
+	cmd |= (chan->send_head & chan->size) ? 0 : LRPC_DONE_PARITY;
+	dst->payload = payload;
+	store_release(&dst->cmd, cmd);
+	// only allow clwb after the message is written
+	store_release(&chan->send_head, chan->send_head + 1);
+
+
+#ifdef NO_CACHE_COHERENCE
+	if (chan->send_head % (CACHE_LINE_SIZE / sizeof(*chan->tbl)) == 0)
+		clwb(dst);
+#endif
+
+	return true;
+}
+
+bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
+	      unsigned long *payload_out)
+{
+	struct lrpc_msg *m = &chan->tbl[chan->recv_head & (chan->size - 1)];
+	uint64_t parity = (chan->recv_head & chan->size) ?
+			  0 : LRPC_DONE_PARITY;
+	uint64_t cmd;
+
+	cmd = load_acquire(&m->cmd);
+	if ((cmd & LRPC_DONE_PARITY) != parity) {
+#ifdef NO_CACHE_COHERENCE
+		clflushopt(m);
+#endif
+		return false;
+	}
+	*cmd_out = cmd & LRPC_CMD_MASK;
+	*payload_out = m->payload;
+	chan->recv_head++;
+
+	store_release(chan->recv_head_wb, chan->recv_head);
+
+#ifdef NO_CACHE_COHERENCE
+	if ((chan->recv_head % (chan->size / 4)) == 0)
+		clwb(chan->recv_head_wb);
+#endif
+
+	return true;
+}
+
 /* internal use only */
 bool __lrpc_send(struct lrpc_chan_out *chan, uint64_t cmd,
 		 unsigned long payload)

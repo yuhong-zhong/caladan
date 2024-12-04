@@ -36,7 +36,7 @@ static int commands_drain_queue(struct thread *t, unsigned long *bufs, int n)
 	return n_bufs;
 }
 
-static int commands_drain_queue_from_seciok(struct lrpc_chan_in *chan, unsigned long *bufs, int n)
+static int commands_drain_queue_from_seciok(struct msg_chan_in *chan, unsigned long *bufs, int n)
 {
 	int i, n_bufs = 0;
 
@@ -44,8 +44,10 @@ static int commands_drain_queue_from_seciok(struct lrpc_chan_in *chan, unsigned 
 		uint64_t cmd, raw_cmd;
 		// uint32_t ip_addr;
 		unsigned long payload;
+		bool success;
 
-		if (!lrpc_recv(chan, &cmd, &payload))
+		log_info_duration(success = msg_recv(chan, &cmd, &payload));
+		if (!success)
 			break;
 
 		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
@@ -58,12 +60,14 @@ static int commands_drain_queue_from_seciok(struct lrpc_chan_in *chan, unsigned 
 	return n_bufs;
 }
 
-static void commands_send_to_pmyiok(struct lrpc_chan_out *chan, unsigned long *bufs, int n)
+static void commands_send_to_pmyiok(struct msg_chan_out *chan, unsigned long *bufs, int n)
 {
 	int i;
+	bool success;
 
 	for (i = 0; i < n; i++) {
-		if (!lrpc_send(chan, IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0), bufs[i])) {
+		log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0), bufs[i]));
+		if (!success) {
 			log_err_ratelimited("commands_send_to_pmyiok: failed to send to primary iokernel");
 		}
 	}

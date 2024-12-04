@@ -42,25 +42,25 @@ enum {
 #define MAX_NR_IOK2IOK		1UL
 
 // All iok2iok QP head pointers must fit in a 2MB page
-BUILD_ASSERT(MAX_NR_IOK2IOK * 6 * sizeof(uint32_t) <= PGSIZE_2MB);
+BUILD_ASSERT(MAX_NR_IOK2IOK * 6 * CACHE_LINE_SIZE <= PGSIZE_2MB);
 
 /* primary iokernel */
-extern struct lrpc_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK];
 
-extern struct lrpc_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK];
 
 /* secondary iokernel */
-extern struct lrpc_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK];
 
-extern struct lrpc_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK];
-extern struct lrpc_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK];
 
 enum {
 	IOK2IOK_CMD_ADD_CLIENT = 0,

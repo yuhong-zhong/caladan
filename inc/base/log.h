@@ -149,7 +149,7 @@ enum {
 		__suppressed++;				\
 })
 
-#define log_info_duration(func)				\
+#define log_duration(level, func)			\
 ({							\
 	static uint64_t __duration_last_ns = 0;		\
 	static uint64_t __duration_count = 0;		\
@@ -163,7 +163,7 @@ enum {
 	__duration_count++;				\
 	__duration_sum += __duration_ns;		\
 	if (__duration_end_ns - __duration_last_ns >= ONE_SECOND * 2000) { \
-		logk(LOG_INFO, "%s:%d\t[%s()]\tcalled %ld/s,\t%ld ns", \
+		logk(level, "%s:%d\t[%s()]\tcalled %ld/s,\t%ld ns", \
 			__FILE__, __LINE__, __func__, __duration_count * ONE_SECOND * 1000ul / (__duration_end_ns - __duration_last_ns), \
 			(__duration_sum / __duration_count)); \
 		__duration_count = 0;			\
@@ -175,5 +175,7 @@ enum {
 #undef log_info_callrate
 #define log_info_callrate() do {} while (0)
 
-#undef log_info_duration
-#define log_info_duration(func) func
+#define log_debug_duration(func) func
+
+#define log_info_duration(func) \
+	log_duration(LOG_INFO, func)

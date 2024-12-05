@@ -103,7 +103,7 @@ static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != rss_hash);
 
-	log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->iok2iok_index), payload));
+	log_debug_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->iok2iok_index), payload));
 	if (unlikely(!success)) {
 		log_err_ratelimited("rx: failed to send to secondary iokernel");
 		return false;
@@ -157,7 +157,7 @@ static bool azure_arp_response(struct rte_mbuf *buf)
 
 static void rx_one_pkt(struct rte_mbuf *buf)
 {
-	int ret;
+	int ret, mark_id;
 	struct proc *p;
 	struct rte_arp_hdr *arphdr;
 	struct rte_ether_hdr *ptr_mac_hdr;
@@ -165,6 +165,25 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 	struct rte_ipv4_hdr *iphdr;
 	uint16_t ether_type;
 	uint32_t dst_ip;
+
+	/* use hardware assisted flow tagging to match packets to procs */
+	if (buf->ol_flags & RTE_MBUF_F_RX_FDIR_ID) {
+		mark_id = buf->hash.fdir.hi;
+		assert(mark_id >= 0 && mark_id < IOKERNEL_MAX_PROC);
+		p = dp.clients_by_id[mark_id];
+		if (likely(p)) {
+			if (p->is_remote) {
+				if (!rx_send_pkt_to_seciok(p, buf)) {
+					STAT_INC(RX_UNICAST_FAIL, 1);
+					goto fail_free;
+				}
+			} else if (!rx_send_pkt_to_runtime(p, buf)) {
+				STAT_INC(RX_UNICAST_FAIL, 1);
+				goto fail_free;
+			}
+			return;
+		}
+	}
 
 	ptr_mac_hdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
 	ptr_dst_addr = &ptr_mac_hdr->dst_addr;
@@ -270,7 +289,7 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
 	struct proc *p;
 
 	for (i = 0; i < n; i++) {
-		log_info_duration(success = msg_recv(chan, &cmd, &payload));
+		log_debug_duration(success = msg_recv(chan, &cmd, &payload));
 		if (!success)
 			break;
 

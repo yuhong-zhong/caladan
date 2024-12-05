@@ -115,7 +115,7 @@ static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned lon
 		RT_BUG_ON(cfg.is_secondary);
 		chan = &iok_as_primary_rxcmdq[p->seciok_index];
 
-		log_info_duration(succeeded = msg_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->iok2iok_index), completion_data));
+		log_debug_duration(succeeded = msg_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->iok2iok_index), completion_data));
 		if (unlikely(!succeeded)) {
 			log_err_ratelimited("tx: failed to send completion to secondary iokernel");
 			proc_put(p);
@@ -198,7 +198,7 @@ static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n)
 
 	for (i = 0; i < n; ++i) {
 		bool success;
-		log_info_duration(success = msg_recv(chan, &cmd, &completion_data));
+		log_debug_duration(success = msg_recv(chan, &cmd, &completion_data));
 		if (!success)
 			break;
 
@@ -300,7 +300,7 @@ static int tx_drain_queue_from_seciok(struct msg_chan_in *chan, int n,
 		unsigned long payload;
 		bool success;
 
-		log_info_duration(success = msg_recv(chan, &cmd, &payload));
+		log_debug_duration(success = msg_recv(chan, &cmd, &payload));
 		if (!success)
 			break;
 
@@ -342,7 +342,7 @@ static void txpkt_send_to_pmyiok(struct msg_chan_out *chan,
 		proc_get(p);
 
 		shmptr = ptr_to_shmptr(&p->region, (void *) hdrs[i], sizeof(*hdrs[i]));
-		log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), iok2iok_proc_index), shmptr));
+		log_debug_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), iok2iok_proc_index), shmptr));
 		if (unlikely(!success)) {
 			log_warn_ratelimited("txpkt_send_to_pmyiok: failed to send to primary iokernel");
 			break;

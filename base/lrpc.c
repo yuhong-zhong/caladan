@@ -61,7 +61,7 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	store_release(chan->recv_head_wb, chan->recv_head);
 
 #ifdef NO_CACHE_COHERENCE
-	if ((chan->recv_head % (chan->size / 4)) == 0)
+	if ((chan->recv_head % (chan->size / 8)) == 0)
 		clwb(chan->recv_head_wb);
 #endif
 

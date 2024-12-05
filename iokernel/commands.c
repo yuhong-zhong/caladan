@@ -45,7 +45,7 @@ static int commands_drain_queue_from_seciok(struct msg_chan_in *chan, unsigned l
 		unsigned long payload;
 		bool success;
 
-		log_info_duration(success = msg_recv(chan, &cmd, &payload));
+		log_debug_duration(success = msg_recv(chan, &cmd, &payload));
 		if (!success)
 			break;
 
@@ -64,7 +64,7 @@ static void commands_send_to_pmyiok(struct msg_chan_out *chan, unsigned long *bu
 	bool success;
 
 	for (i = 0; i < n; i++) {
-		log_info_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0), bufs[i]));
+		log_debug_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0), bufs[i]));
 		if (!success) {
 			log_err_ratelimited("commands_send_to_pmyiok: failed to send to primary iokernel");
 		}

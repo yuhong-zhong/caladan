@@ -50,6 +50,7 @@ int data_to_control_efd;
 static struct lrpc_chan_out lrpc_control_to_data;
 static struct lrpc_chan_in lrpc_data_to_control;
 
+static DEFINE_BITMAP(uniq_ids, IOKERNEL_MAX_PROC);
 static DEFINE_BITMAP(iok2iok_proc_ids, IOKERNEL_MAX_PROC);
 
 /* primary iokernel */
@@ -366,6 +367,8 @@ static void control_destroy_proc(struct proc *p)
 	if (p->has_vfio_directpath)
 		release_directpath_ctx(p);
 
+	if (!cfg.is_secondary)
+		bitmap_clear(uniq_ids, p->uniqid);
 	bitmap_clear(iok2iok_proc_ids, p->iok2iok_index);
 	iok2iok_proc_as_pmyiok[p->iok2iok_index] = NULL;
 	nr_clients--;
@@ -497,6 +500,9 @@ static void control_add_client(void)
 		goto fail_efd;
 	}
 
+	p->uniqid = bitmap_find_next_cleared(uniq_ids, IOKERNEL_MAX_PROC, 0);
+	BUG_ON(p->uniqid == IOKERNEL_MAX_PROC);
+	bitmap_set(uniq_ids, p->uniqid);
 	nr_clients++;
 	p->control_fd = fd;
 	return;

@@ -159,6 +159,11 @@ struct lrpc_msg {
 #define LRPC_DONE_PARITY	(1UL << 63)
 #define LRPC_CMD_MASK		(~LRPC_DONE_PARITY)
 
+#define LRPC_BATCH_SIZE (CACHE_LINE_SIZE / sizeof(struct lrpc_msg))
+struct batch_lrpc_msg {
+	struct lrpc_msg msg_arr[LRPC_BATCH_SIZE];
+} __attribute__((aligned(CACHE_LINE_SIZE)));
+
 struct msg_chan_out {
 	uint32_t	send_head;
 	uint32_t	send_tail;
@@ -166,6 +171,8 @@ struct msg_chan_out {
 	uint32_t 	*recv_head_wb;
 	uint32_t	size;
 	uint32_t	clwb_send_head;
+	// struct batch_lrpc_msg batch_msg;
+	// uint32_t	batch_index;	
 } __attribute__((aligned(CACHE_LINE_SIZE)));
 
 static inline int msg_init_out(struct msg_chan_out *chan, struct lrpc_msg *tbl,
@@ -208,9 +215,10 @@ bool msg_send(struct msg_chan_out *chan, uint64_t cmd,
 	assert(!(cmd & LRPC_DONE_PARITY));
 
 	if (unlikely(chan->send_head - chan->send_tail >= chan->size)) {
+		clflushopt(chan->recv_head_wb);
+		_mm_mfence();
 		chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
 		if (chan->send_head - chan->send_tail == chan->size) {
-			clflushopt(chan->recv_head_wb);
 			return false;
 		}
 	}
@@ -227,6 +235,63 @@ bool msg_send(struct msg_chan_out *chan, uint64_t cmd,
 
 	return true;
 }
+
+// bool msg_send_ntstore_zero(struct msg_chan_out *chan)
+// {
+// 	struct lrpc_msg *dst;
+
+// 	// if (unlikely(chan->send_head - chan->send_tail + LRPC_BATCH_SIZE - 1 >= chan->size)) {
+// 	// 	clflushopt(chan->recv_head_wb);
+// 	// 	_mm_mfence();
+// 	// 	chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
+// 	// 	if (chan->send_head - chan->send_tail + LRPC_BATCH_SIZE - 1 >= chan->size) {
+// 	// 		return false;
+// 	// 	}
+// 	// }
+
+// 	struct batch_lrpc_msg batch_msg;
+// 	__m512i zmm1 = _mm512_load_si512(&batch_msg);
+
+// 	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
+// 	_mm512_stream_si512((__m512i*) dst, zmm1);
+// 	// _mm_sfence();
+
+// 	chan->send_head += LRPC_BATCH_SIZE;
+// 	return true;
+// }
+
+// bool msg_send_batch_ntstore(struct msg_chan_out *chan, uint64_t cmd, unsigned long payload)
+// {
+// 	struct lrpc_msg *dst;
+
+// 	assert(!(cmd & LRPC_DONE_PARITY));
+
+// 	chan->batch_msg.msg_arr[chan->batch_index].payload = payload;
+// 	chan->batch_msg.msg_arr[chan->batch_index].cmd = cmd;
+// 	chan->batch_index++;
+// 	if (chan->batch_index < LRPC_BATCH_SIZE)
+// 		return true;
+
+// 	if (unlikely(chan->send_head - chan->send_tail + LRPC_BATCH_SIZE - 1 >= chan->size)) {
+// 		clflushopt(chan->recv_head_wb);
+// 		_mm_mfence();
+// 		chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
+// 		if (chan->send_head - chan->send_tail + LRPC_BATCH_SIZE - 1 == chan->size) {
+// 			// drop all messages
+// 			chan->batch_index = 0;
+// 			return false;
+// 		}
+// 	}
+
+// 	__m512i zmm1 = _mm512_load_si512(&chan->batch_msg);
+
+// 	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
+// 	_mm512_stream_si512((__m512i*) dst, zmm1);
+
+// 	chan->send_head += LRPC_BATCH_SIZE;
+// 	chan->batch_index = 0;
+// 	return true;
+// }
 
 struct msg_chan_in {
 	struct lrpc_msg	*tbl;
@@ -376,6 +441,10 @@ int main(int argc, char *argv[]) {
 			// log_ratelimited("send failed\n");
 			pause();
 		}
+		// while (!msg_send_batch(&chan_out, 0, i)) {
+		// 	// log_ratelimited("send failed\n");
+		// 	pause();
+		// }
 	}
 	uint64_t end = __rdtsc();
 	double duration_ns = (end - start) / BASE_TSC;

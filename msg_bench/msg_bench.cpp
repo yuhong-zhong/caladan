@@ -136,7 +136,6 @@ do {						\
 		}														\
 	} while (0)
 
-
 #define BUG_ON(cond)										\
 	do {											\
 		if (cond) {									\
@@ -144,6 +143,12 @@ do {						\
 		raise(SIGABRT);									\
 		}										\
 	} while (0)
+
+#define prefetch0(x) __builtin_prefetch((x), 0, 3)
+#define prefetch1(x) __builtin_prefetch((x), 0, 2)
+#define prefetch2(x) __builtin_prefetch((x), 0, 1)
+#define prefetchnta(x) __builtin_prefetch((x), 0, 0)
+#define prefetch(x) prefetch0(x)
 
 
 struct lrpc_msg {
@@ -279,6 +284,9 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	cmd = load_acquire(&m->cmd);
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 		clflushopt(m);
+		clflushopt(m + CACHE_LINE_SIZE / sizeof(*m));
+		prefetch(m + 2 * CACHE_LINE_SIZE / sizeof(*m));
+		prefetch(m + 3 * CACHE_LINE_SIZE / sizeof(*m));
 		return false;
 	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
@@ -315,8 +323,9 @@ void consumer_thread_fn(uint8_t *cxl_numa1, uint64_t num_iterations) {
 	for (uint64_t i = 0; i < num_iterations; i++) {
 		while (!msg_recv(&chan, &cmd, &payload)) {
 			// log_ratelimited("recv failed\n");
-			;
+			pause();
 		}
+		BUG_ON(payload != i);
 	}
 }
 
@@ -363,17 +372,17 @@ int main(int argc, char *argv[]) {
 
 	uint64_t start = __rdtsc();
 	for (uint64_t i = 0; i < num_iterations; i++) {
-		while (!msg_send(&chan_out, 0, 0)) {
+		while (!msg_send(&chan_out, 0, i)) {
 			// log_ratelimited("send failed\n");
-			;
+			pause();
 		}
 	}
 	uint64_t end = __rdtsc();
 	double duration_ns = (end - start) / BASE_TSC;
 	double throughput = num_iterations / (duration_ns / 1e9);
 
-	consumer_thread.join();
 	printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct lrpc_msg) / (1 << 20));
+	consumer_thread.join();
 
 	return 0;
 }

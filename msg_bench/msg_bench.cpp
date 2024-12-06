@@ -349,9 +349,9 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	cmd = load_acquire(&m->cmd);
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 		clflushopt(m);
-		clflushopt(m + CACHE_LINE_SIZE / sizeof(*m));
-		prefetch(m + 2 * CACHE_LINE_SIZE / sizeof(*m));
-		prefetch(m + 3 * CACHE_LINE_SIZE / sizeof(*m));
+		// clflushopt(m + CACHE_LINE_SIZE / sizeof(*m));
+		// prefetch(m + 2 * CACHE_LINE_SIZE / sizeof(*m));
+		// prefetch(m + 3 * CACHE_LINE_SIZE / sizeof(*m));
 		return false;
 	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
@@ -362,6 +362,8 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 
 	if ((chan->recv_head % (chan->size / 8)) == 0)
 		clwb(chan->recv_head_wb);
+	if ((chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m))) == 0)
+		clflushopt(m);
 
 	return true;
 }
@@ -431,6 +433,52 @@ int main(int argc, char *argv[]) {
 	uint32_t *recv_head_wb = (uint32_t *) cxl_numa0;
 	cxl_numa0 += HUGE_PAGE_SIZE;
 	msg_init_out(&chan_out, (struct lrpc_msg *) cxl_numa0, CHAN_SIZE, recv_head_wb);
+
+	// // for (uint64_t i = 0; i < CHAN_SIZE; ++i) {
+	// // 	bool sent = msg_send(&chan_out, 0, i);
+	// // 	BUG_ON(!sent);
+	// // }
+
+	// // batch_clflushopt(cxl_numa0 - HUGE_PAGE_SIZE, CXL_MEM_SIZE);
+	// // _mm_mfence();
+
+	// run_on_core(NUMA1_CORE);
+
+	// struct msg_chan_in chan_in;
+	// memset(&chan_in, 0, sizeof(chan_in));
+	// uint32_t *new_recv_head_wb = (uint32_t *) cxl_numa1;
+	// cxl_numa1 += HUGE_PAGE_SIZE;
+	// msg_init_in(&chan_in, (struct lrpc_msg *) cxl_numa1, CHAN_SIZE, new_recv_head_wb);
+
+	// // batch_clflushopt(cxl_numa1 - HUGE_PAGE_SIZE, CXL_MEM_SIZE);
+	// // _mm_mfence();
+
+	// // volatile uint64_t tmp_cmd;
+	// // for (uint64_t i = 0; i < CHAN_SIZE; ++i) {
+	// // 	tmp_cmd = ACCESS_ONCE(chan_in.tbl[i].cmd);
+	// // }
+
+	// run_on_core(NUMA0_CORE);
+	// for (uint64_t i = 0; i < CHAN_SIZE; ++i) {
+	// 	bool sent = msg_send(&chan_out, 0, i);
+	// 	BUG_ON(!sent);
+	// }
+	// run_on_core(NUMA1_CORE);
+
+	// uint64_t start = __rdtsc();
+	// for (uint64_t i = 0; i < CHAN_SIZE; ++i) {
+	// 	uint64_t cmd;
+	// 	unsigned long payload;
+	// 	while (!msg_recv(&chan_in, &cmd, &payload)) {
+	// 		// log_ratelimited("recv failed\n");
+	// 		pause();
+	// 	}
+	// 	BUG_ON(payload != i);
+	// }
+	// uint64_t end = __rdtsc();
+	// double duration_ns = (end - start) / BASE_TSC;
+	// double throughput = CHAN_SIZE / (duration_ns / 1e9);
+	// printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct lrpc_msg) / (1 << 20));
 
 	thread consumer_thread(consumer_thread_fn, cxl_numa1, num_iterations);
 	sleep(1);

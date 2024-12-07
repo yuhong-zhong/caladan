@@ -349,10 +349,10 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	cmd = load_acquire(&m->cmd);
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 		clflushopt(m);
-		// clflushopt(m + CACHE_LINE_SIZE / sizeof(*m));
-		// prefetch(m + 2 * CACHE_LINE_SIZE / sizeof(*m));
-		// prefetch(m + 3 * CACHE_LINE_SIZE / sizeof(*m));
-		return false;
+		_mm_lfence();
+		cmd = load_acquire(&m->cmd);
+		if ((cmd & LRPC_DONE_PARITY) != parity)
+			return false;
 	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
@@ -376,6 +376,8 @@ void run_on_core(uint64_t core) {
         BUG_ON(sched_result != 0);
 }
 
+#define LAT_SAMPLE_RATE (1000ul)
+
 void consumer_thread_fn(uint8_t *cxl_numa1, uint64_t num_iterations) {
 	run_on_core(NUMA1_CORE);
 
@@ -385,24 +387,42 @@ void consumer_thread_fn(uint8_t *cxl_numa1, uint64_t num_iterations) {
 	cxl_numa1 += HUGE_PAGE_SIZE;
 	msg_init_in(&chan, (struct lrpc_msg *) cxl_numa1, CHAN_SIZE, recv_head_wb);
 
+	const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
+	uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
+	BUG_ON(latency_buf == NULL);
+	memset(latency_buf, 0, num_samples * sizeof(uint64_t));
+	uint64_t lat_index = 0;
+
 	uint64_t cmd;
 	unsigned long payload;
 	for (uint64_t i = 0; i < num_iterations; i++) {
 		while (!msg_recv(&chan, &cmd, &payload)) {
-			// log_ratelimited("recv failed\n");
 			pause();
 		}
-		BUG_ON(payload != i);
+		BUG_ON(cmd != i);
+		if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
+			uint64_t now = __rdtsc();
+			latency_buf[lat_index++] = now - payload;
+		}
 	}
+
+	sort(latency_buf, latency_buf + num_samples);
+	printf("p50: %lu ns, p80: %lu ns, p90: %lu ns, p99: %lu ns\n",
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples / 2)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.8)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.9)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.99)] / BASE_TSC));
 }
 
 int main(int argc, char *argv[]) {
-	if (argc != 2) {
-		fprintf(stderr, "Usage: %s <num_iterations>\n", argv[0]);
+	if (argc != 3) {
+		fprintf(stderr, "Usage: %s <num_iterations> <delay (ns)>\n", argv[0]);
 		exit(1);
 	}
 	uint64_t num_iterations = atoll(argv[1]);
 	BUG_ON(num_iterations == 0);
+	uint64_t delay_ns = atoll(argv[2]);
+	uint64_t delay_tsc = (uint64_t) delay_ns * BASE_TSC;
 
 	run_on_core(NUMA0_CORE);
 
@@ -481,11 +501,16 @@ int main(int argc, char *argv[]) {
 	// printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct lrpc_msg) / (1 << 20));
 
 	thread consumer_thread(consumer_thread_fn, cxl_numa1, num_iterations);
-	sleep(1);
+	sleep(2);
 
 	uint64_t start = __rdtsc();
 	for (uint64_t i = 0; i < num_iterations; i++) {
-		while (!msg_send(&chan_out, 0, i)) {
+		uint64_t now = __rdtsc();
+		while (now < start + delay_tsc * i) {
+			pause();
+			now = __rdtsc();
+		}
+		while (!msg_send(&chan_out, i, now)) {
 			// log_ratelimited("send failed\n");
 			pause();
 		}

@@ -120,6 +120,7 @@ static void dataplane_loop_vfio(void)
 void dataplane_loop(void)
 {
 	bool work_done;
+	int i;
 #if 0
 	uint64_t next_log_time = microtime();
 #endif
@@ -142,6 +143,28 @@ void dataplane_loop(void)
 	/* run until quit or killed */
 	for (;;) {
 		work_done = false;
+
+		if (cfg.is_secondary) {
+			msg_in_sync(&iok_as_secondary_rxq[cfg.seciok_index]);
+			msg_in_sync(&iok_as_secondary_rxcmdq[cfg.seciok_index]);
+
+			msg_out_sync(&iok_as_secondary_txpktq[cfg.seciok_index]);
+			msg_out_sync(&iok_as_secondary_txcmdq[cfg.seciok_index]);
+
+			msg_out_sync(&iok_as_secondary_cmdq_out[cfg.seciok_index]);
+			msg_in_sync(&iok_as_secondary_cmdq_in[cfg.seciok_index]);
+		} else {
+			for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+				msg_out_sync(&iok_as_primary_rxq[i]);
+				msg_out_sync(&iok_as_primary_rxcmdq[i]);
+
+				msg_in_sync(&iok_as_primary_txpktq[i]);
+				msg_in_sync(&iok_as_primary_txcmdq[i]);
+
+				msg_in_sync(&iok_as_primary_cmdq_in[i]);
+				msg_out_sync(&iok_as_primary_cmdq_out[i]);
+			}
+		}
 
 		/* handle a burst of ingress packets */
 		work_done |= rx_burst();
@@ -173,60 +196,6 @@ void dataplane_loop(void)
 	}
 }
 
-#ifdef NO_CACHE_COHERENCE
-static void __attribute__ ((noinline)) cc_loop_pmyiok()
-{
-	int i;
-
-	while (true) {
-		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
-			msg_out_sync(&iok_as_primary_rxq[i]);
-			msg_out_sync(&iok_as_primary_rxcmdq[i]);
-
-			msg_in_sync(&iok_as_primary_txpktq[i]);
-			msg_in_sync(&iok_as_primary_txcmdq[i]);
-
-			msg_in_sync(&iok_as_primary_cmdq_in[i]);
-			msg_out_sync(&iok_as_primary_cmdq_out[i]);
-		}
-	}
-}
-
-static void __attribute__ ((noinline)) cc_loop_seciok()
-{
-	while (true) {
-		msg_in_sync(&iok_as_secondary_rxq[cfg.seciok_index]);
-		msg_in_sync(&iok_as_secondary_rxcmdq[cfg.seciok_index]);
-
-		msg_out_sync(&iok_as_secondary_txpktq[cfg.seciok_index]);
-		msg_out_sync(&iok_as_secondary_txcmdq[cfg.seciok_index]);
-
-		msg_out_sync(&iok_as_secondary_cmdq_out[cfg.seciok_index]);
-		msg_in_sync(&iok_as_secondary_cmdq_in[cfg.seciok_index]);
-	}
-}
-
-static void *cc_thread(void *data)
-{
-	int ret;
-
-	/* pin to our assigned core */
-	ret = pin_thread(thread_gettid(), sched_cc_core);
-	if (ret < 0) {
-		log_err("control: failed to pin cc thread to core %d",
-			sched_cc_core);
-		/* continue running but performance is unpredictable */
-	}
-
-	if (cfg.is_secondary)
-		cc_loop_seciok();
-	else
-		cc_loop_pmyiok();
-
-	return NULL;
-}
-#endif
-
 static void print_usage(void)
 {
 	printf("usage: POLICY [noht/core_list/nobw/mutualpair]\n");
@@ -239,9 +208,6 @@ int main(int argc, char *argv[])
 {
 	int i, ret;
 	struct utsname utsname;
-#ifdef NO_CACHE_COHERENCE
-	pthread_t cc_tid;
-#endif
 
 	if (getuid() != 0) {
 		fprintf(stderr, "Error: please run as root\n");
@@ -327,11 +293,6 @@ int main(int argc, char *argv[])
 		} else if (!strcmp(argv[i], "sched_ctrl_core")) {
 			sched_ctrl_core = atoi(argv[++i]);
 			sched_ctrl_core_supplied = true;
-#ifdef NO_CACHE_COHERENCE
-		} else if (!strcmp(argv[i], "sched_cc_core")) {
-			sched_cc_core = atoi(argv[++i]);
-			sched_cc_core_supplied = true;
-#endif
 		} else if (!strcmp(argv[i], "iok_cxl_path")) {
 			iok_cxl_path = argv[++i];
 		} else if (!strcmp(argv[i], "iok_cxl_size")) {
@@ -390,11 +351,6 @@ int main(int argc, char *argv[])
 	pthread_barrier_wait(&init_barrier);
 
 	ksched_uintr_init();
-
-#ifdef NO_CACHE_COHERENCE
-	ret = pthread_create(&cc_tid, NULL, cc_thread, NULL);
-	RT_BUG_ON(ret != 0);
-#endif
 
 	if (cfg.vfio_directpath)
 		dataplane_loop_vfio();

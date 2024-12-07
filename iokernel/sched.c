@@ -30,15 +30,9 @@ unsigned int sched_siblings[NCPU];
 /* core assignments */
 unsigned int sched_dp_core;	/* used for the iokernel's dataplane */
 unsigned int sched_ctrl_core;	/* used for the iokernel's controlplane */
-#ifdef NO_CACHE_COHERENCE
-unsigned int sched_cc_core;	/* used for the iokernel's cache coherence thread */
-#endif
 
 bool sched_dp_core_supplied = false;
 bool sched_ctrl_core_supplied = false;
-#ifdef NO_CACHE_COHERENCE
-bool sched_cc_core_supplied = false;
-#endif
 
 /* keeps track of which cores are in each NUMA socket */
 struct socket socket_state[NNUMA];
@@ -1063,24 +1057,10 @@ int sched_init(void)
 		else
 			sched_dp_core = sched_siblings[sched_ctrl_core];
 	}
-#ifdef NO_CACHE_COHERENCE
-	if (!sched_cc_core_supplied) {
-		if (cfg.noht)
-			sched_cc_core = bitmap_find_next_set(sched_allowed_cores, NCPU, sched_dp_core + 1);
-		else
-			sched_cc_core = sched_siblings[sched_dp_core];
-	}
-#endif
 	bitmap_clear(sched_allowed_cores, sched_ctrl_core);
 	bitmap_clear(sched_allowed_cores, sched_dp_core);
-#ifdef NO_CACHE_COHERENCE
-	bitmap_clear(sched_allowed_cores, sched_cc_core);
-#endif
 	log_info("sched: dataplane on %d, control on %d",
 		 sched_dp_core, sched_ctrl_core);
-#ifdef NO_CACHE_COHERENCE
-	log_info("sched: cache coherence on %d", sched_cc_core);
-#endif
 
 	/* check if configuration disables hyperthreads */
 	if (cfg.noht) {

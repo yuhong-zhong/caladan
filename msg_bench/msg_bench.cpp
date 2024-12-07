@@ -236,6 +236,34 @@ bool msg_send(struct msg_chan_out *chan, uint64_t cmd,
 	return true;
 }
 
+bool huge_msg_send(struct msg_chan_out *chan, uint64_t cmd, unsigned long payload)
+{
+	struct lrpc_msg *dst;
+
+	if (unlikely(chan->send_head - chan->send_tail + LRPC_BATCH_SIZE - 1 >= chan->size)) {
+		clflushopt(chan->recv_head_wb);
+		_mm_mfence();
+		chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
+		if (chan->send_head - chan->send_tail + LRPC_BATCH_SIZE - 1 >= chan->size) {
+			return false;
+		}
+	}
+
+	cmd |= (chan->send_head & chan->size) ? 0 : LRPC_DONE_PARITY;
+
+	struct batch_lrpc_msg batch_msg;
+	batch_msg.msg_arr[0].payload = payload;
+	batch_msg.msg_arr[0].cmd = cmd;
+	__m512i zmm1 = _mm512_load_si512(&batch_msg);
+
+	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
+	_mm512_stream_si512((__m512i*) dst, zmm1);
+	_mm_sfence();
+
+	chan->send_head += LRPC_BATCH_SIZE;
+	return true;
+}
+
 // bool msg_send_ntstore_zero(struct msg_chan_out *chan)
 // {
 // 	struct lrpc_msg *dst;
@@ -368,6 +396,35 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	return true;
 }
 
+bool huge_msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
+	      unsigned long *payload_out)
+{
+	struct lrpc_msg *m = &chan->tbl[chan->recv_head & (chan->size - 1)];
+	uint64_t parity = (chan->recv_head & chan->size) ?
+			  0 : LRPC_DONE_PARITY;
+	uint64_t cmd;
+
+	cmd = load_acquire(&m->cmd);
+	if ((cmd & LRPC_DONE_PARITY) != parity) {
+		clflushopt(m);
+		_mm_lfence();
+		cmd = load_acquire(&m->cmd);
+		if ((cmd & LRPC_DONE_PARITY) != parity)
+			return false;
+	}
+	*cmd_out = cmd & LRPC_CMD_MASK;
+	*payload_out = m->payload;
+	chan->recv_head += LRPC_BATCH_SIZE;
+
+	store_release(chan->recv_head_wb, chan->recv_head);
+
+	if ((chan->recv_head % (chan->size / 8)) == 0)
+		clwb(chan->recv_head_wb);
+	clflushopt(m);
+
+	return true;
+}
+
 void run_on_core(uint64_t core) {
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
@@ -396,7 +453,10 @@ void consumer_thread_fn(uint8_t *cxl_numa1, uint64_t num_iterations) {
 	uint64_t cmd;
 	unsigned long payload;
 	for (uint64_t i = 0; i < num_iterations; i++) {
-		while (!msg_recv(&chan, &cmd, &payload)) {
+		// while (!msg_recv(&chan, &cmd, &payload)) {
+		// 	pause();
+		// }
+		while (!huge_msg_recv(&chan, &cmd, &payload)) {
 			pause();
 		}
 		BUG_ON(cmd != i);
@@ -510,14 +570,12 @@ int main(int argc, char *argv[]) {
 			pause();
 			now = __rdtsc();
 		}
-		while (!msg_send(&chan_out, i, now)) {
-			// log_ratelimited("send failed\n");
-			pause();
-		}
-		// while (!msg_send_batch(&chan_out, 0, i)) {
-		// 	// log_ratelimited("send failed\n");
+		// while (!msg_send(&chan_out, i, now)) {
 		// 	pause();
 		// }
+		while (!huge_msg_send(&chan_out, i, now)) {
+			pause();
+		}
 	}
 	uint64_t end = __rdtsc();
 	double duration_ns = (end - start) / BASE_TSC;

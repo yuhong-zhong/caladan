@@ -14,11 +14,12 @@ bool msg_send(struct msg_chan_out *chan, uint64_t cmd,
 	assert(!(cmd & LRPC_DONE_PARITY));
 
 	if (unlikely(chan->send_head - chan->send_tail >= chan->size)) {
+#ifdef NO_CACHE_COHERENCE
+		clflushopt(chan->recv_head_wb);
+		_mm_mfence();
+#endif
 		chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
 		if (chan->send_head - chan->send_tail == chan->size) {
-#ifdef NO_CACHE_COHERENCE
-			clflushopt(chan->recv_head_wb);
-#endif
 			return false;
 		}
 	}
@@ -51,8 +52,13 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 #ifdef NO_CACHE_COHERENCE
 		clflushopt(m);
-#endif
+		_mm_lfence();
+		cmd = load_acquire(&m->cmd);
+		if ((cmd & LRPC_DONE_PARITY) != parity)
+			return false;
+#else
 		return false;
+#endif
 	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
@@ -63,6 +69,8 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 #ifdef NO_CACHE_COHERENCE
 	if ((chan->recv_head % (chan->size / 8)) == 0)
 		clwb(chan->recv_head_wb);
+	if ((chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m))) == 0)
+		clflushopt(m);
 #endif
 
 	return true;

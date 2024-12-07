@@ -188,9 +188,9 @@ static inline int msg_init_out(struct msg_chan_out *chan, struct lrpc_msg *tbl,
 	return 0;
 }
 
-#ifdef NO_CACHE_COHERENCE
 static inline void msg_out_sync(struct msg_chan_out *chan)
 {
+#ifdef NO_CACHE_COHERENCE
 	// while (chan->send_head > chan->clwb_send_head) {
 	// 	clwb(&chan->tbl[chan->clwb_send_head & (chan->size - 1)]);
 	// 	chan->clwb_send_head = MIN(chan->send_head, chan->clwb_send_head + CACHE_LINE_SIZE / sizeof(*chan->tbl));
@@ -200,14 +200,14 @@ static inline void msg_out_sync(struct msg_chan_out *chan)
 	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
 	clwb(dst);
 
-	chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
-	if (chan->send_head - chan->send_tail >= chan->size / 2) {
-		clflushopt(chan->recv_head_wb);
-		_mm_mfence();
-		chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
-	}
-}
+	// chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
+	// if (chan->send_head - chan->send_tail >= chan->size / 2) {
+	// 	clflushopt(chan->recv_head_wb);
+	// 	_mm_mfence();
+	// 	chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
+	// }
 #endif
+}
 
 bool msg_send(struct msg_chan_out *chan, uint64_t cmd, unsigned long payload);
 
@@ -234,30 +234,30 @@ static inline int msg_init_in(struct msg_chan_in *chan, struct lrpc_msg *tbl,
 	return 0;
 }
 
-#ifdef NO_CACHE_COHERENCE
-#define LRPC_IN_SYNC_BURST_SIZE 64
+// #define LRPC_IN_SYNC_BURST_SIZE 64
 static inline void msg_in_sync(struct msg_chan_in *chan)
 {
-	int i;
-	struct lrpc_msg *m;
-	uint64_t cmd, parity;
+#ifdef NO_CACHE_COHERENCE
+	// int i;
+	// struct lrpc_msg *m;
+	// uint64_t cmd, parity;
 
-	clwb(chan->recv_head_wb);
+	// clwb(chan->recv_head_wb);
 
-	chan->new_recv_head = MAX(ACCESS_ONCE(*chan->recv_head_wb), chan->new_recv_head);
-	for (i = 0; i < LRPC_IN_SYNC_BURST_SIZE; ++i) {
-		m = &chan->tbl[(chan->new_recv_head) & (chan->size - 1)];
-		cmd = ACCESS_ONCE(m->cmd);
-		parity = ((chan->new_recv_head) & chan->size) ?
-			 0 : LRPC_DONE_PARITY;
+	// chan->new_recv_head = MAX(ACCESS_ONCE(*chan->recv_head_wb), chan->new_recv_head);
+	// for (i = 0; i < LRPC_IN_SYNC_BURST_SIZE; ++i) {
+	// 	m = &chan->tbl[(chan->new_recv_head) & (chan->size - 1)];
+	// 	cmd = ACCESS_ONCE(m->cmd);
+	// 	parity = ((chan->new_recv_head) & chan->size) ?
+	// 		 0 : LRPC_DONE_PARITY;
 
-		if ((cmd & LRPC_DONE_PARITY) != parity) {
-			clflushopt(m);
-			break;
-		}
-		chan->new_recv_head += 2;
-	}
-}
+	// 	if ((cmd & LRPC_DONE_PARITY) != parity) {
+	// 		clflushopt(m);
+	// 		break;
+	// 	}
+	// 	chan->new_recv_head += 2;
+	// }
 #endif
+}
 
 bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out, unsigned long *payload_out);

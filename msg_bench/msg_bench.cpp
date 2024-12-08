@@ -374,6 +374,12 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 			  0 : LRPC_DONE_PARITY;
 	uint64_t cmd;
 
+	if ((chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m))) == 0) {
+		for (int i = 1; i <= 48; i++) {
+			prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
+		}
+	}
+
 	cmd = load_acquire(&m->cmd);
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 		clflushopt(m);
@@ -453,12 +459,12 @@ void consumer_thread_fn(uint8_t *cxl_numa1, uint64_t num_iterations) {
 	uint64_t cmd;
 	unsigned long payload;
 	for (uint64_t i = 0; i < num_iterations; i++) {
-		// while (!msg_recv(&chan, &cmd, &payload)) {
-		// 	pause();
-		// }
-		while (!huge_msg_recv(&chan, &cmd, &payload)) {
+		while (!msg_recv(&chan, &cmd, &payload)) {
 			pause();
 		}
+		// while (!huge_msg_recv(&chan, &cmd, &payload)) {
+		// 	pause();
+		// }
 		BUG_ON(cmd != i);
 		if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
 			uint64_t now = __rdtsc();
@@ -570,12 +576,12 @@ int main(int argc, char *argv[]) {
 			pause();
 			now = __rdtsc();
 		}
-		// while (!msg_send(&chan_out, i, now)) {
-		// 	pause();
-		// }
-		while (!huge_msg_send(&chan_out, i, now)) {
+		while (!msg_send(&chan_out, i, now)) {
 			pause();
 		}
+		// while (!huge_msg_send(&chan_out, i, now)) {
+		// 	pause();
+		// }
 	}
 	uint64_t end = __rdtsc();
 	double duration_ns = (end - start) / BASE_TSC;

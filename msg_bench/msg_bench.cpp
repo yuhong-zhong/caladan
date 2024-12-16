@@ -39,6 +39,10 @@ using namespace std::chrono;
 #define CXL_MEM_SIZE (1ul << 30ul)
 #define NUMA0_CORE (0)
 #define NUMA1_CORE (52)
+
+#define NUMA0_DAX "/dev/dax0.0"
+#define NUMA1_DAX "/dev/dax2.0"
+
 #define BASE_TSC (2.3l)
 
 #define CACHE_LINE_SHIFT 6ul
@@ -366,6 +370,8 @@ static inline int msg_init_in(struct msg_chan_in *chan, struct lrpc_msg *tbl,
 // 	}
 // }
 
+#define PREFETCH_LEN 4
+
 bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	      unsigned long *payload_out)
 {
@@ -375,7 +381,7 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	uint64_t cmd;
 
 	if ((chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m))) == 0) {
-		for (int i = 1; i <= 48; i++) {
+		for (int i = 1; i <= PREFETCH_LEN; i++) {
 			prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
 		}
 	}
@@ -384,9 +390,13 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 		clflushopt(m);
 		_mm_lfence();
+		for (int i = 1; i <= PREFETCH_LEN; i++)
+			clflushopt(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
 		cmd = load_acquire(&m->cmd);
-		if ((cmd & LRPC_DONE_PARITY) != parity)
+		if ((cmd & LRPC_DONE_PARITY) != parity) {
+			clflushopt(m);
 			return false;
+		}
 	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
@@ -492,7 +502,7 @@ int main(int argc, char *argv[]) {
 
 	run_on_core(NUMA0_CORE);
 
-	int fd = open("/dev/dax0.0", O_RDWR);
+	int fd = open(NUMA0_DAX, O_RDWR);
 	BUG_ON(fd < 0);
 	uint8_t *cxl_numa0 = (uint8_t *) mmap(NULL, CXL_MEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	BUG_ON(cxl_numa0 == MAP_FAILED);
@@ -502,7 +512,7 @@ int main(int argc, char *argv[]) {
 	batch_clflushopt(cxl_numa0, CXL_MEM_SIZE);
 	_mm_mfence();
 
-	fd = open("/dev/dax2.0", O_RDWR);
+	fd = open(NUMA1_DAX, O_RDWR);
 	BUG_ON(fd < 0);
 	uint8_t *cxl_numa1 = (uint8_t *) mmap(NULL, CXL_MEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	BUG_ON(cxl_numa1 == MAP_FAILED);

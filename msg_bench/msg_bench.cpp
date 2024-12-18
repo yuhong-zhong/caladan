@@ -275,6 +275,8 @@ struct msg_chan_in {
 	uint32_t	recv_head;
 	uint32_t	size;
 	uint32_t	new_recv_head;
+	uint32_t	prefetch_len;
+	uint32_t	hit_count;
 } __attribute__((aligned(CACHE_LINE_SIZE)));
 
 static inline int msg_init_in(struct msg_chan_in *chan, struct lrpc_msg *tbl,
@@ -301,7 +303,7 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	uint64_t cmd;
 
 	if ((chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m))) == 0) {
-		for (int i = 1; i <= PREFETCH_LEN; i++) {
+		for (int i = 1; i <= chan->prefetch_len; i++) {
 			prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
 		}
 	}
@@ -310,9 +312,11 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 		clflushopt(m);
 		_mm_lfence();
-		for (int i = 1; i <= PREFETCH_LEN; i++)
+		for (int i = 1; i <= chan->prefetch_len; i++)
 			clflushopt(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
 		cmd = load_acquire(&m->cmd);
+		chan->prefetch_len = (chan->prefetch_len <= 3) ? 1 : (chan->prefetch_len - 2);
+		chan->hit_count = 0;
 		if ((cmd & LRPC_DONE_PARITY) != parity) {
 			clflushopt(m);
 			return false;
@@ -321,6 +325,12 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
 	chan->recv_head++;
+
+	chan->hit_count += 1;
+	if (chan->hit_count >= (chan->prefetch_len + 1) * (CACHE_LINE_SIZE / sizeof(*m))) {
+		chan->prefetch_len = (chan->prefetch_len == PREFETCH_LEN) ? PREFETCH_LEN : (chan->prefetch_len + 1);
+		chan->hit_count = 0;
+	}
 
 	store_release(chan->recv_head_wb, chan->recv_head);
 
@@ -340,7 +350,7 @@ bool huge_msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 			  0 : LRPC_DONE_PARITY;
 	uint64_t cmd;
 
-	for (int i = 1; i <= PREFETCH_LEN; i++) {
+	for (int i = 1; i <= chan->prefetch_len; i++) {
 		prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
 	}
 	// prefetch(&chan->tbl[(chan->recv_head + PREFETCH_LEN * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
@@ -349,9 +359,11 @@ bool huge_msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 		clflushopt(m);
 		_mm_lfence();
-		for (int i = 1; i <= PREFETCH_LEN; i++)
+		for (int i = 1; i <= chan->prefetch_len; i++)
 			clflushopt(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
 		cmd = load_acquire(&m->cmd);
+		chan->prefetch_len = (chan->prefetch_len <= 3) ? 1 : (chan->prefetch_len - 2);
+		chan->hit_count = 0;
 		if ((cmd & LRPC_DONE_PARITY) != parity) {
 			clflushopt(m);
 			return false;
@@ -360,6 +372,12 @@ bool huge_msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
 	chan->recv_head += LRPC_BATCH_SIZE;
+
+	chan->hit_count += 1;
+	if (chan->hit_count - 1 >= chan->prefetch_len) {
+		chan->prefetch_len = (chan->prefetch_len == PREFETCH_LEN) ? PREFETCH_LEN : (chan->prefetch_len + 1);
+		chan->hit_count = 0;
+	}
 
 	store_release(chan->recv_head_wb, chan->recv_head);
 
@@ -388,35 +406,36 @@ void consumer_thread_fn(uint8_t *cxl_numa1, uint64_t num_iterations) {
 	uint32_t *recv_head_wb = (uint32_t *) cxl_numa1;
 	cxl_numa1 += HUGE_PAGE_SIZE;
 	msg_init_in(&chan, (struct lrpc_msg *) cxl_numa1, CHAN_SIZE, recv_head_wb);
+	chan.prefetch_len = 1;
 
-	// const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
-	// uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
-	// BUG_ON(latency_buf == NULL);
-	// memset(latency_buf, 0, num_samples * sizeof(uint64_t));
-	// uint64_t lat_index = 0;
+	const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
+	uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
+	BUG_ON(latency_buf == NULL);
+	memset(latency_buf, 0, num_samples * sizeof(uint64_t));
+	uint64_t lat_index = 0;
 
 	uint64_t cmd;
 	unsigned long payload;
 	for (uint64_t i = 0; i < num_iterations; i++) {
-		// while (!msg_recv(&chan, &cmd, &payload)) {
-		// 	pause();
-		// }
-		while (!huge_msg_recv(&chan, &cmd, &payload)) {
+		while (!msg_recv(&chan, &cmd, &payload)) {
 			pause();
 		}
-		BUG_ON(cmd != i);
-		// if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
-		// 	uint64_t now = __rdtsc();
-		// 	latency_buf[lat_index++] = now - payload;
+		// while (!huge_msg_recv(&chan, &cmd, &payload)) {
+		// 	pause();
 		// }
+		BUG_ON(cmd != i);
+		if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
+			uint64_t now = __rdtsc();
+			latency_buf[lat_index++] = now - payload;
+		}
 	}
 
-	// sort(latency_buf, latency_buf + num_samples);
-	// printf("p50: %lu ns, p80: %lu ns, p90: %lu ns, p99: %lu ns\n",
-	//        (uint64_t) (latency_buf[(uint64_t) (num_samples / 2)] / BASE_TSC),
-	//        (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.8)] / BASE_TSC),
-	//        (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.9)] / BASE_TSC),
-	//        (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.99)] / BASE_TSC));
+	sort(latency_buf, latency_buf + num_samples);
+	printf("p50: %lu ns, p80: %lu ns, p90: %lu ns, p99: %lu ns\n",
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples / 2)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.8)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.9)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.99)] / BASE_TSC));
 	// for (uint64_t i = 0; i < num_samples; i++) {
 	// 	printf("%lu\n", latency_buf[i]);
 	// }
@@ -518,19 +537,19 @@ int main(int argc, char *argv[]) {
 			pause();
 			now = __rdtsc();
 		}
-		// while (!msg_send(&chan_out, i, now)) {
-		// 	pause();
-		// }
-		while (!huge_msg_send(&chan_out, i, now)) {
+		while (!msg_send(&chan_out, i, now)) {
 			pause();
 		}
+		// while (!huge_msg_send(&chan_out, i, now)) {
+		// 	pause();
+		// }
 	}
 	uint64_t end = __rdtsc();
 	double duration_ns = (end - start) / BASE_TSC;
 	double throughput = num_iterations / (duration_ns / 1e9);
 
-	// printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct lrpc_msg) / (1 << 20));
-	printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct batch_lrpc_msg) / (1 << 20));
+	printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct lrpc_msg) / (1 << 20));
+	// printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct batch_lrpc_msg) / (1 << 20));
 	consumer_thread.join();
 
 	return 0;

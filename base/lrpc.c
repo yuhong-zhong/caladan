@@ -31,7 +31,6 @@ bool msg_send(struct msg_chan_out *chan, uint64_t cmd,
 	// only allow clwb after the message is written
 	store_release(&chan->send_head, chan->send_head + 1);
 
-
 #ifdef NO_CACHE_COHERENCE
 	if (chan->send_head % (CACHE_LINE_SIZE / sizeof(*chan->tbl)) == 0)
 		clwb(dst);
@@ -51,18 +50,30 @@ bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 	cmd = load_acquire(&m->cmd);
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
 #ifdef NO_CACHE_COHERENCE
-		clflushopt(m);
-		_mm_lfence();
-		cmd = load_acquire(&m->cmd);
-		if ((cmd & LRPC_DONE_PARITY) != parity)
-			return false;
-#else
-		return false;
+		for (int i = 0; i <= chan->prefetch_len; i++)
+			clflushopt(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
+		// chan->prefetch_len = (chan->prefetch_len <= 3) ? 1 : (chan->prefetch_len - 2);
+		// chan->hit_count = 0;
 #endif
+		return false;
 	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
 	chan->recv_head++;
+
+#ifdef NO_CACHE_COHERENCE
+	if (chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m)) == 1) {
+		for (int i = 1; i <= chan->prefetch_len; i++) {
+			prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
+		}
+	}
+
+	// chan->hit_count += 1;
+	// if (chan->hit_count >= (chan->prefetch_len + 1) * (CACHE_LINE_SIZE / sizeof(*m))) {
+	// 	chan->prefetch_len = (chan->prefetch_len == LRPC_PREFETCH_LEN) ? LRPC_PREFETCH_LEN : (chan->prefetch_len + 1);
+	// 	chan->hit_count = 0;
+	// }
+#endif
 
 	store_release(chan->recv_head_wb, chan->recv_head);
 

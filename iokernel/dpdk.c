@@ -81,6 +81,8 @@ static const struct rte_eth_conf port_conf_default = {
 	},
 };
 
+int noinline_flag;
+
 /*
  * Initializes a given port using global settings and with the RX buffers
  * coming from the mbuf_pool passed as a parameter.
@@ -146,6 +148,13 @@ static inline int dpdk_port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 		if (retval < 0)
 			return retval;
 	}
+
+	static const struct rte_mbuf_dynflag rte_noinline = {
+		.name = "mlx5_fine_granularity_inline",
+	};
+	noinline_flag = rte_mbuf_dynflag_register(&rte_noinline);
+	RT_BUG_ON(noinline_flag < 0);
+	log_info("dpdk: registered noinline flag %d", noinline_flag);
 
 	/* Start the Ethernet port. */
 	retval = rte_eth_dev_start(port);

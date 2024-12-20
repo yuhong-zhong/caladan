@@ -148,15 +148,15 @@ void dataplane_loop(void)
 			msg_in_sync(&iok_as_secondary_rxq[cfg.seciok_index]);
 			msg_in_sync(&iok_as_secondary_rxcmdq[cfg.seciok_index]);
 
-			msg_out_sync(&iok_as_secondary_txpktq[cfg.seciok_index]);
-			msg_out_sync(&iok_as_secondary_txcmdq[cfg.seciok_index]);
+			// msg_out_sync(&iok_as_secondary_txpktq[cfg.seciok_index]);
+			// msg_out_sync(&iok_as_secondary_txcmdq[cfg.seciok_index]);
 
 			msg_out_sync(&iok_as_secondary_cmdq_out[cfg.seciok_index]);
 			msg_in_sync(&iok_as_secondary_cmdq_in[cfg.seciok_index]);
 		} else {
 			for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
-				msg_out_sync(&iok_as_primary_rxq[i]);
-				msg_out_sync(&iok_as_primary_rxcmdq[i]);
+				// msg_out_sync(&iok_as_primary_rxq[i]);
+				// msg_out_sync(&iok_as_primary_rxcmdq[i]);
 
 				msg_in_sync(&iok_as_primary_txpktq[i]);
 				msg_in_sync(&iok_as_primary_txcmdq[i]);

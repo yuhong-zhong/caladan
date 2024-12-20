@@ -414,8 +414,8 @@ static void control_add_client(void)
 
 	*((struct iokernel_info *) client_shm_buf) = *iok_info;
 #ifdef NO_CACHE_COHERENCE
-	batch_clwb(client_shm_buf, sizeof(struct iokernel_info));
-	_mm_sfence();
+	batch_clflushopt(client_shm_buf, sizeof(struct iokernel_info));
+	_mm_mfence();
 #endif
 
 	ret = write(fd, &client_cxl_offset, sizeof(client_cxl_offset));

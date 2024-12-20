@@ -77,6 +77,7 @@ static void tx_prepare_tx_mbuf(struct rte_mbuf *buf, struct tx_net_hdr *net_hdr,
 		buf->l3_len = sizeof(struct rte_ipv4_hdr);
 		buf->l2_len = RTE_ETHER_HDR_LEN;
 	}
+	buf->ol_flags |= noinline_flag;
 
 	/* initialize the private data, used to send completion events */
 	priv_data = tx_pktmbuf_get_priv(buf);
@@ -412,6 +413,7 @@ full:
 	if (cfg.is_secondary) {
 		txpkt_send_to_pmyiok(&iok_as_secondary_txpktq[cfg.seciok_index],
 				     hdrs, threads, n_pkts);
+		msg_out_sync(&iok_as_secondary_txpktq[cfg.seciok_index]);
 		n_pkts = 0;
 		return true;
 	}
@@ -429,10 +431,16 @@ full:
 
 	/* fill in packet metadata */
 	for (i = n_bufs; i < n_pkts; i++) {
-		// if (i + TX_PREFETCH_STRIDE < n_pkts)
-		// 	prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
 		tx_prepare_tx_mbuf(bufs[i], hdrs[i], lens[i], olflags[i], threads[i], procs[i]);
+#ifdef NO_CACHE_COHERENCE
+		// batch_clflushopt(bufs[i]->buf_addr, bufs[i]->buf_len);
+		clflushopt(bufs[i]->buf_addr);
+		clflushopt(bufs[i]->buf_addr + CACHE_LINE_SIZE);
+#endif
 	}
+#ifdef NO_CACHE_COHERENCE
+	_mm_mfence();
+#endif
 
 	n_bufs = n_pkts;
 

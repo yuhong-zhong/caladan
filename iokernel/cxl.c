@@ -80,8 +80,8 @@ void *cxl_alloc_client(uint64_t *out_cxl_offset)
 
         memset(client_buf_base + i * CXL_CLIENT_SIZE, 0, CXL_CLIENT_SIZE);
 #ifdef NO_CACHE_COHERENCE
-        batch_clwb(client_buf_base + i * CXL_CLIENT_SIZE, CXL_CLIENT_SIZE);
-        _mm_sfence();
+        batch_clflushopt(client_buf_base + i * CXL_CLIENT_SIZE, CXL_CLIENT_SIZE);
+        _mm_mfence();
 #endif
 
         if (out_cxl_offset != NULL)

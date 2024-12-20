@@ -73,11 +73,12 @@ impl SyntheticProtocol {
 
 impl Payload {
     pub fn serialize_into<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        let val = self.index as u8;
         writer.write_u64::<BigEndian>(self.work_iterations)?;
         writer.write_u64::<BigEndian>(self.index)?;
         writer.write_u64::<BigEndian>(self.randomness)?;
         writer.write_u64::<BigEndian>(self.extra_payload_size)?;
-        writer.write_all(&vec![0; self.extra_payload_size as usize])?;
+        writer.write_all(&vec![val; self.extra_payload_size as usize])?;
         Ok(())
     }
 

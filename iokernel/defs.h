@@ -369,6 +369,8 @@ struct dataplane {
 extern struct dataplane dp;
 extern struct iokernel_info *iok_info;
 
+extern int noinline_flag;
+
 /*
  * Logical cores assigned to linux and the control and dataplane threads
  */
@@ -472,7 +474,7 @@ extern uint64_t iok_cxl_size;
 
 extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset);
 
-#define CXL_CLIENT_SIZE (1UL << 31UL)
+#define CXL_CLIENT_SIZE (1UL << 32UL)
 extern void *cxl_alloc_client(uint64_t *out_cxl_offset);
 extern void cxl_free_client(void *ptr);
 void *cxl_get_client(uint64_t cxl_offset);

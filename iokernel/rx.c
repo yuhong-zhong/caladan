@@ -194,15 +194,24 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 	  ptr_dst_addr->addr_bytes[4], ptr_dst_addr->addr_bytes[5]);
 
 	ether_type = rte_be_to_cpu_16(ptr_mac_hdr->ether_type);
+#ifdef NO_CACHE_COHERENCE
+	clflushopt(ptr_mac_hdr);
+#endif
 
 	if (likely(ether_type == ETHTYPE_IP)) {
 		iphdr = rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *,
 			sizeof(*ptr_mac_hdr));
 		dst_ip = rte_be_to_cpu_32(iphdr->dst_addr);
+#ifdef NO_CACHE_COHERENCE
+		clflushopt(iphdr);
+#endif
 	} else if (ether_type == ETHTYPE_ARP) {
 		arphdr = rte_pktmbuf_mtod_offset(buf, struct rte_arp_hdr *,
 			sizeof(*ptr_mac_hdr));
 		dst_ip = rte_be_to_cpu_32(arphdr->arp_data.arp_tip);
+#ifdef NO_CACHE_COHERENCE
+		clflushopt(arphdr);
+#endif
 
 		// Azure's faked ARP replies always go to the default NIC
 		// address, so broadcast them to all runtimes.
@@ -340,11 +349,20 @@ bool rx_burst(void)
 		log_debug("rx: received %d packets on port %d", nb_rx, dp.port);
 
 	for (i = 0; i < nb_rx; i++) {
+		// should not prefetch so that the NIC always writes RX packets into main memory
+#ifndef NO_CACHE_COHERENCE
 		if (i + RX_PREFETCH_STRIDE < nb_rx) {
 			prefetch(rte_pktmbuf_mtod(bufs[i + RX_PREFETCH_STRIDE],
 				 char *));
 		}
+#endif
 		rx_one_pkt(bufs[i]);
+	}
+
+	if (!cfg.is_secondary) {
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			msg_out_sync(&iok_as_primary_rxq[i]);
+		}
 	}
 
 	return nb_rx > 0;

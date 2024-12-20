@@ -155,9 +155,7 @@ enum {
 	static uint64_t __duration_count = 0;		\
 	static uint64_t __duration_sum = 0;		\
 	volatile uint64_t __duration_start_ns = nanotime(); \
-	_mm_lfence();					\
 	func;						\
-	_mm_lfence();					\
 	volatile uint64_t __duration_end_ns = nanotime(); \
 	uint64_t __duration_ns = __duration_end_ns - __duration_start_ns; \
 	__duration_count++;				\

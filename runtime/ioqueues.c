@@ -465,9 +465,9 @@ int ioqueues_register_iokernel(void)
 #endif
 	hdr->thread_specs = ptr_to_shmptr(r, iok.threads, sizeof(*iok.threads) * maxks);
 #ifdef NO_CACHE_COHERENCE
-	batch_clwb(hdr, sizeof(*hdr));
-	batch_clwb(iok.threads, sizeof(*iok.threads) * maxks);
-	_mm_sfence();
+	batch_clflushopt(hdr, sizeof(*hdr));
+	batch_clflushopt(iok.threads, sizeof(*iok.threads) * maxks);
+	_mm_mfence();
 #endif
 
 	// // Make sure it's an abstract namespace path.

@@ -19,7 +19,7 @@ struct completion_stack {
 static int completion_enqueue(struct rte_mempool *mp, void * const *obj_table,
 		unsigned n)
 {
-	unsigned long i;
+	unsigned long i, j;
 	struct completion_stack *s = mp->pool_data;
 
 	if (unlikely(s->len + n > s->size))
@@ -28,6 +28,10 @@ static int completion_enqueue(struct rte_mempool *mp, void * const *obj_table,
 	for (i = 0; i < n; i++)
 		// Give up on notifying the runtime if this returns false.
 		tx_send_completion(obj_table[i]);
+
+	for (j = 0; j < MAX_NR_IOK2IOK; ++j) {
+		msg_out_sync(&iok_as_primary_rxcmdq[j]);
+	}
 
 #if defined(__clang__)
 #pragma clang loop vectorize(enable)

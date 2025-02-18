@@ -53,18 +53,53 @@ extern bool __lrpc_send(struct lrpc_chan_out *chan, uint64_t cmd,
 static inline bool lrpc_send(struct lrpc_chan_out *chan, uint64_t cmd,
 			     unsigned long payload)
 {
+	// struct lrpc_msg *dst;
+
+	// assert(!(cmd & LRPC_DONE_PARITY));
+
+	// if (unlikely(chan->send_head - chan->send_tail >= chan->size))
+	// 	return __lrpc_send(chan, cmd, payload);
+
+	// dst = &chan->tbl[chan->send_head & (chan->size - 1)];
+	// cmd |= (chan->send_head++ & chan->size) ? 0 : LRPC_DONE_PARITY;
+	// dst->payload = payload;
+	// store_release(&dst->cmd, cmd);
+	// return true;
+
 	struct lrpc_msg *dst;
 
 	assert(!(cmd & LRPC_DONE_PARITY));
 
-	if (unlikely(chan->send_head - chan->send_tail >= chan->size))
-		return __lrpc_send(chan, cmd, payload);
+	if (unlikely(chan->send_head - chan->send_tail >= chan->size)) {
+#ifdef NO_CACHE_COHERENCE
+		clflushopt(chan->recv_head_wb);
+		_mm_mfence();
+#endif
+		chan->send_tail = ACCESS_ONCE(*chan->recv_head_wb);
+		if (chan->send_head - chan->send_tail == chan->size) {
+			return false;
+		}
+	}
 
 	dst = &chan->tbl[chan->send_head & (chan->size - 1)];
-	cmd |= (chan->send_head++ & chan->size) ? 0 : LRPC_DONE_PARITY;
+	cmd |= (chan->send_head & chan->size) ? 0 : LRPC_DONE_PARITY;
 	dst->payload = payload;
 	store_release(&dst->cmd, cmd);
+	store_release(&chan->send_head, chan->send_head + CACHE_LINE_SIZE / sizeof(*dst));
+
+#ifdef NO_CACHE_COHERENCE
+	if (chan->send_head % (CACHE_LINE_SIZE / sizeof(*chan->tbl)) == 0)
+		clwb(dst);
+#endif
+
 	return true;
+}
+
+static inline void lrpc_out_sync(struct lrpc_chan_out *chan)
+{
+// #ifdef NO_CACHE_COHERENCE
+// 	clwb(&chan->tbl[chan->send_head & (chan->size - 1)]);
+// #endif
 }
 
 /**
@@ -134,19 +169,66 @@ struct lrpc_chan_in {
 static inline bool lrpc_recv(struct lrpc_chan_in *chan, uint64_t *cmd_out,
 			     unsigned long *payload_out)
 {
-        struct lrpc_msg *m = &chan->tbl[chan->recv_head & (chan->size - 1)];
-        uint64_t parity = (chan->recv_head & chan->size) ?
+        // struct lrpc_msg *m = &chan->tbl[chan->recv_head & (chan->size - 1)];
+        // uint64_t parity = (chan->recv_head & chan->size) ?
+	// 		  0 : LRPC_DONE_PARITY;
+	// uint64_t cmd;
+
+	// cmd = load_acquire(&m->cmd);
+        // if ((cmd & LRPC_DONE_PARITY) != parity)
+	// 	return false;
+	// chan->recv_head++;
+
+	// *cmd_out = cmd & LRPC_CMD_MASK;
+	// *payload_out = m->payload;
+	// store_release(chan->recv_head_wb, chan->recv_head);
+	// return true;
+
+	struct lrpc_msg *m = &chan->tbl[chan->recv_head & (chan->size - 1)];
+	uint64_t parity = (chan->recv_head & chan->size) ?
 			  0 : LRPC_DONE_PARITY;
 	uint64_t cmd;
 
 	cmd = load_acquire(&m->cmd);
-        if ((cmd & LRPC_DONE_PARITY) != parity)
+	if ((cmd & LRPC_DONE_PARITY) != parity) {
+#ifdef NO_CACHE_COHERENCE
+		for (int i = 0; i <= LRPC_PREFETCH_LEN; i++)
+			clflushopt(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
+		// chan->prefetch_len = (chan->prefetch_len <= 3) ? 1 : (chan->prefetch_len - 2);
+		// chan->hit_count = 0;
+#endif
 		return false;
-	chan->recv_head++;
-
+	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
+	chan->recv_head += CACHE_LINE_SIZE / sizeof(*m);
+
+#ifdef NO_CACHE_COHERENCE
+	// if (chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m)) == 1) {
+	// 	for (int i = 1; i <= LRPC_PREFETCH_LEN; i++) {
+	// 		prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
+	// 	}
+	// }
+	for (int i = 1; i <= LRPC_PREFETCH_LEN; i++) {
+		prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
+	}
+
+	// chan->hit_count += 1;
+	// if (chan->hit_count >= (chan->prefetch_len + 1) * (CACHE_LINE_SIZE / sizeof(*m))) {
+	// 	chan->prefetch_len = (chan->prefetch_len == LRPC_PREFETCH_LEN) ? LRPC_PREFETCH_LEN : (chan->prefetch_len + 1);
+	// 	chan->hit_count = 0;
+	// }
+#endif
+
 	store_release(chan->recv_head_wb, chan->recv_head);
+
+#ifdef NO_CACHE_COHERENCE
+	if ((chan->recv_head % (chan->size / 8)) == 0)
+		clwb(chan->recv_head_wb);
+	if ((chan->recv_head % (CACHE_LINE_SIZE / sizeof(*m))) == 0)
+		clflushopt(m);
+#endif
+
 	return true;
 }
 
@@ -159,7 +241,15 @@ static inline bool lrpc_empty(struct lrpc_chan_in *chan)
 	struct lrpc_msg *m = &chan->tbl[chan->recv_head & (chan->size - 1)];
 	uint64_t parity = (chan->recv_head & chan->size) ?
 			  0 : LRPC_DONE_PARITY;
-	return (ACCESS_ONCE(m->cmd) & LRPC_DONE_PARITY) != parity;
+	if ((ACCESS_ONCE(m->cmd) & LRPC_DONE_PARITY) != parity) {
+#ifdef NO_CACHE_COHERENCE
+		for (int i = 0; i <= LRPC_PREFETCH_LEN; i++)
+			clflushopt(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
+#endif
+		return true;
+	} else {
+		return false;
+	}
 }
 
 extern int lrpc_init_in(struct lrpc_chan_in *chan, struct lrpc_msg *tbl,

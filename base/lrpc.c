@@ -148,5 +148,6 @@ int lrpc_init_in(struct lrpc_chan_in *chan, struct lrpc_msg *tbl,
 	chan->tbl = tbl;
 	chan->size = size;
 	chan->recv_head_wb = recv_head_wb;
+	chan->prefetch_len = 0;
 	return 0;
 }

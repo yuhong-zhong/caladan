@@ -16,11 +16,17 @@ struct completion_stack {
 	void *objs[];
 };
 
+/* the number of active threads to be polled (across all procs) */
+extern unsigned int nrts;
+/* an array of active threads to be polled (across all procs) */
+extern struct thread *ts[NCPU];
+
 static int completion_enqueue(struct rte_mempool *mp, void * const *obj_table,
 		unsigned n)
 {
 	unsigned long i, j;
 	struct completion_stack *s = mp->pool_data;
+	unsigned int k;
 
 	if (unlikely(s->len + n > s->size))
 		return -ENOBUFS;
@@ -29,6 +35,9 @@ static int completion_enqueue(struct rte_mempool *mp, void * const *obj_table,
 		// Give up on notifying the runtime if this returns false.
 		tx_send_completion(obj_table[i]);
 
+	for (k = 0; k < nrts; ++k) {
+		lrpc_out_sync(&ts[k]->rxq);
+	}
 	for (j = 0; j < MAX_NR_IOK2IOK; ++j) {
 		msg_out_sync(&iok_as_primary_rxcmdq[j]);
 	}

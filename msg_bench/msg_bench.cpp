@@ -344,34 +344,27 @@ bool huge_msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out,
 			  0 : LRPC_DONE_PARITY;
 	uint64_t cmd;
 
-	for (int i = 1; i <= chan->prefetch_len; i++) {
-		prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
-	}
-	// prefetch(&chan->tbl[(chan->recv_head + PREFETCH_LEN * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
-
 	cmd = load_acquire(&m->cmd);
 	if ((cmd & LRPC_DONE_PARITY) != parity) {
-		clflushopt(m);
-		_mm_lfence();
-		for (int i = 1; i <= chan->prefetch_len; i++)
+		for (int i = 0; i <= chan->prefetch_len; i++)
 			clflushopt(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
-		cmd = load_acquire(&m->cmd);
-		chan->prefetch_len = (chan->prefetch_len <= 3) ? 1 : (chan->prefetch_len - 2);
-		chan->hit_count = 0;
-		if ((cmd & LRPC_DONE_PARITY) != parity) {
-			clflushopt(m);
-			return false;
-		}
+		// chan->prefetch_len = (chan->prefetch_len <= 3) ? 1 : (chan->prefetch_len - 2);
+		// chan->hit_count = 0;
+		return false;
 	}
 	*cmd_out = cmd & LRPC_CMD_MASK;
 	*payload_out = m->payload;
 	chan->recv_head += LRPC_BATCH_SIZE;
 
-	chan->hit_count += 1;
-	if (chan->hit_count - 1 >= chan->prefetch_len) {
-		chan->prefetch_len = (chan->prefetch_len == PREFETCH_LEN) ? PREFETCH_LEN : (chan->prefetch_len + 1);
-		chan->hit_count = 0;
+	for (int i = 1; i <= chan->prefetch_len; i++) {
+		prefetch(&chan->tbl[(chan->recv_head + i * CACHE_LINE_SIZE / sizeof(*m)) & (chan->size - 1)]);
 	}
+
+	// chan->hit_count += 1;
+	// if (chan->hit_count - 1 >= chan->prefetch_len) {
+	// 	chan->prefetch_len = (chan->prefetch_len == PREFETCH_LEN) ? PREFETCH_LEN : (chan->prefetch_len + 1);
+	// 	chan->hit_count = 0;
+	// }
 
 	store_release(chan->recv_head_wb, chan->recv_head);
 

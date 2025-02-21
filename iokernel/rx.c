@@ -327,6 +327,11 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
 	return i;
 }
 
+/* the number of active threads to be polled (across all procs) */
+extern unsigned int nrts;
+/* an array of active threads to be polled (across all procs) */
+extern struct thread *ts[NCPU];
+
 /*
  * Process a batch of incoming packets.
  */
@@ -334,6 +339,7 @@ bool rx_burst(void)
 {
 	struct rte_mbuf *bufs[IOKERNEL_RX_BURST_SIZE];
 	uint16_t nb_rx, i;
+	unsigned int j;
 
 	if (cfg.is_secondary) {
 		nb_rx = rx_burst_from_pmyiok(&iok_as_secondary_rxq[cfg.seciok_index],
@@ -359,6 +365,9 @@ bool rx_burst(void)
 		rx_one_pkt(bufs[i]);
 	}
 
+	for (j = 0; j < nrts; ++j) {
+		lrpc_out_sync(&ts[j]->rxq);
+	}
 	if (!cfg.is_secondary) {
 		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
 			msg_out_sync(&iok_as_primary_rxq[i]);

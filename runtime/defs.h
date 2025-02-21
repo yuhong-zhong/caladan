@@ -385,7 +385,8 @@ struct kthread {
 	uint32_t		rq_head;
 	uint32_t		rq_tail;
 	struct list_head	rq_overflow;
-	struct lrpc_chan_in	rxq;
+	// struct lrpc_chan_in	rxq;
+	struct _lrpc_chan_in	_rxq;
 	pid_t			tid;
 	bool			parked;
 
@@ -429,6 +430,8 @@ struct kthread {
 
 	/* 10th cache-line, statistics counters */
 	uint64_t		stats[STAT_NR];
+
+	struct lrpc_chan_in	rxq;
 };
 
 /* compile-time verification of cache-line alignment */

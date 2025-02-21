@@ -86,6 +86,13 @@ bool commands_rx(void)
 	 */
 	for (i = 0; i < nrts; i++) {
 		unsigned int idx = (pos + i) % nrts;
+		lrpc_prefetch(&ts[(idx) % nrts]->txcmdq);
+	}
+	for (i = 0; i < nrts; i++) {
+		unsigned int idx = (pos + i) % nrts;
+
+		// if (i < nrts - 2)
+		// 	lrpc_prefetch(&ts[(pos + i + 2) % nrts]->txcmdq);
 
 		if (n_bufs >= IOKERNEL_CMD_BURST_SIZE)
 			break;

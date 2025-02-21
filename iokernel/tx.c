@@ -372,6 +372,14 @@ bool tx_burst(void)
 	 */
 	for (i = 0; i < nrts; i++) {
 		unsigned int idx = (pos + i) % nrts;
+		lrpc_prefetch(&ts[(idx) % nrts]->txpktq);
+	}
+	for (i = 0; i < nrts; i++) {
+		unsigned int idx = (pos + i) % nrts;
+
+		// if (i < nrts - 2)
+		// 	lrpc_prefetch(&ts[(pos + i + 2) % nrts]->txpktq);
+
 		t = ts[idx];
 		ret = tx_drain_queue(t, IOKERNEL_TX_BURST_SIZE - n_pkts,
 				     &hdrs[n_pkts]);

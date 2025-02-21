@@ -265,11 +265,11 @@ int ioqueues_init_early(void)
 	iok.cxl_shm_len = cxl_shm_len;
 
 	iok.iok_info = (struct iokernel_info *) iok.cxl_shm_buf;
-	RT_BUG_ON(iok.iok_info->magic_number != 0xbeef);
 #ifdef NO_CACHE_COHERENCE
 	batch_clflushopt(iok.iok_info, sizeof(*iok.iok_info));
 	_mm_sfence();
 #endif
+	RT_BUG_ON(iok.iok_info->magic_number != 0xbeef);
 	memcpy(&netcfg.mac, &iok.iok_info->host_mac, sizeof(netcfg.mac));
 
 #ifdef DIRECTPATH

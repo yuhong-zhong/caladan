@@ -11,6 +11,8 @@
 
 static bool softirq_iokernel_pending(struct kthread *k)
 {
+	lrpc_out_sync(&k->txcmdq);
+	lrpc_out_sync(&k->txpktq);
 	return !lrpc_empty(&k->rxq);
 }
 

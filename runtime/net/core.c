@@ -335,6 +335,8 @@ static void iokernel_softirq_poll(struct kthread *k)
 			panic("net: invalid RXQ cmd '%ld'", cmd);
 		}
 	}
+	lrpc_out_sync(&k->txcmdq);
+	lrpc_out_sync(&k->txpktq);
 }
 
 static void iokernel_softirq(void *arg)

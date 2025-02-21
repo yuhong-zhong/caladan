@@ -69,6 +69,10 @@ FLAGS += -DMLX4
 endif
 endif
 
+ifeq ($(CONFIG_NO_SCHED),y)
+FLAGS += -DNO_SCHED
+endif
+
 ifeq ($(CONFIG_NO_CACHE_COHERENCE),y)
 	ifeq ($(CONFIG_DIRECTPATH),y)
 	$(error NO_CACHE_COHERENCE does not support DIRECTPATH)

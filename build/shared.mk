@@ -76,6 +76,10 @@ ifeq ($(CONFIG_NO_CACHE_COHERENCE),y)
 	FLAGS += -DNO_CACHE_COHERENCE
 endif
 
+ifeq ($(CONFIG_NO_SCHED),y)
+	FLAGS += -DNO_SCHED
+endif
+
 ifeq ($(CONFIG_SPDK),y)
 FLAGS += -DDIRECT_STORAGE
 RUNTIME_LIBS += $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" pkg-config --libs --static libdpdk)

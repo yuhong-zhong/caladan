@@ -223,7 +223,7 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 	/* parse the control header */
 #ifdef NO_CACHE_COHERENCE
 	batch_clflushopt(shbuf, sizeof(hdr));
-	_mm_sfence();
+	_mm_mfence();
 #endif
 	memcpy(&hdr, (struct control_hdr *)shbuf, sizeof(hdr)); /* TOCTOU */
 	if (hdr.magic != CONTROL_HDR_MAGIC ||
@@ -238,7 +238,7 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 	/* copy arrays of threads, timers, and hwq specs */
 #ifdef NO_CACHE_COHERENCE
 	batch_clflushopt(shbuf + hdr.thread_specs, sizeof(*threads) * hdr.thread_count);
-	_mm_sfence();
+	_mm_mfence();
 #endif
 	threads = copy_shm_data(&reg, hdr.thread_specs, hdr.thread_count * sizeof(*threads));
 	if (!threads)
@@ -267,7 +267,7 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 		goto fail;
 #ifdef NO_CACHE_COHERENCE
 	batch_clflushopt(p->runtime_info, sizeof(*p->runtime_info));
-	_mm_sfence();
+	_mm_mfence();
 #endif
 	memset(&p->runtime_info->congestion, 0, sizeof(p->runtime_info->congestion));
 	if (hdr.request_directpath_queues != DIRECTPATH_REQUEST_NONE) {

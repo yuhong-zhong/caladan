@@ -389,6 +389,7 @@ void run_on_core(uint64_t core) {
 #define LAT_SAMPLE_RATE (1000ul)
 
 void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
+	uint8_t *cxl_buf_start = cxl_buf;
 	batch_clflushopt(cxl_buf, CXL_MEM_SIZE);
 	printf("finished flushing CXL memory\n");
 
@@ -439,7 +440,7 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 	// }
 
 	printf("Finished receiving %lu messages\n", num_iterations);
-	batch_clflushopt(cxl_buf, CXL_MEM_SIZE);
+	batch_clflushopt(cxl_buf_start, CXL_MEM_SIZE);
 }
 
 void sender_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations, uint64_t delay_tsc) {

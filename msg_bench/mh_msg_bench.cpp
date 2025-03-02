@@ -402,6 +402,13 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 	cxl_buf += HUGE_PAGE_SIZE;
 	msg_init_in(&chan, (struct lrpc_msg *) cxl_buf, CHAN_SIZE, recv_head_wb);
 	chan.prefetch_len = 16;
+	cxl_buf += ROUND_UP(CHAN_SIZE * sizeof(struct lrpc_msg), CACHE_LINE_SIZE);
+
+	struct msg_chan_out reverse_chan;
+	memset(&reverse_chan, 0, sizeof(reverse_chan));
+	uint32_t *reverse_recv_head_wb = (uint32_t *) cxl_buf;
+	cxl_buf += HUGE_PAGE_SIZE;
+	msg_init_out(&reverse_chan, (struct lrpc_msg *) cxl_buf, CHAN_SIZE, reverse_recv_head_wb);
 
 	// const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
 	// uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
@@ -423,6 +430,7 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 		// 	pause();
 		// }
 		BUG_ON(cmd != i);
+		msg_send(&reverse_chan, cmd, payload);
 		// if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
 		// 	uint64_t now = __rdtsc();
 		// 	latency_buf[lat_index++] = now - payload;
@@ -443,6 +451,25 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 	batch_clflushopt(cxl_buf_start, CXL_MEM_SIZE);
 }
 
+void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_iterations) {
+	uint64_t cmd;
+	unsigned long payload;
+	uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_iterations * sizeof(uint64_t));
+	for (uint64_t i = 0; i < num_iterations; i++) {
+		while (!msg_recv(reverse_chan, &cmd, &payload)) {
+			pause();
+		}
+		uint64_t now = __rdtsc();
+		latency_buf[i] = now - payload;
+	}
+	sort(latency_buf, latency_buf + num_iterations);
+	printf("p50: %lu ns, p80: %lu ns, p90: %lu ns, p99: %lu ns\n",
+	       (uint64_t) (latency_buf[(uint64_t) (num_iterations / 2)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.8)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.9)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.99)] / BASE_TSC));
+}
+
 void sender_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations, uint64_t delay_tsc) {
 	memset(cxl_buf, 0, CXL_MEM_SIZE);
 	batch_clflushopt(cxl_buf, CXL_MEM_SIZE);
@@ -460,6 +487,17 @@ void sender_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations, uint64_t delay_
 	uint32_t *recv_head_wb = (uint32_t *) cxl_buf;
 	cxl_buf += HUGE_PAGE_SIZE;
 	msg_init_out(&chan_out, (struct lrpc_msg *) cxl_buf, CHAN_SIZE, recv_head_wb);
+	cxl_buf += ROUND_UP(CHAN_SIZE * sizeof(struct lrpc_msg), CACHE_LINE_SIZE);
+
+	// initialize reverse channel
+	struct msg_chan_in reverse_chan;
+	memset(&reverse_chan, 0, sizeof(reverse_chan));
+	uint32_t *reverse_recv_head_wb = (uint32_t *) cxl_buf;
+	cxl_buf += HUGE_PAGE_SIZE;
+	msg_init_in(&reverse_chan, (struct lrpc_msg *) cxl_buf, CHAN_SIZE, reverse_recv_head_wb);
+	reverse_chan.prefetch_len = 16;
+
+	thread reverse_thread(sender_reverse_thread_fn, &reverse_chan, num_iterations);
 
 	// wait for receiver to start
 	while (*receiver_signal == 0)
@@ -485,6 +523,7 @@ void sender_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations, uint64_t delay_
 
 	printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct lrpc_msg) / (1 << 20));
 	// printf("throughput: %.2f Mop/s (%.2f MB/s)\n", throughput / 1e6, throughput * sizeof(struct batch_lrpc_msg) / (1 << 20));
+	reverse_thread.join();
 }
 
 int main(int argc, char *argv[]) {

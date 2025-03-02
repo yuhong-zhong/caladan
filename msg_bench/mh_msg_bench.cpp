@@ -463,7 +463,8 @@ void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_ite
 		latency_buf[i] = now - payload;
 	}
 	sort(latency_buf, latency_buf + num_iterations);
-	printf("p50: %lu ns, p80: %lu ns, p90: %lu ns, p99: %lu ns\n",
+	printf("min: %lu ns, p50: %lu ns, p80: %lu ns, p90: %lu ns, p99: %lu ns\n",
+	       (uint64_t) (latency_buf[0] / BASE_TSC),
 	       (uint64_t) (latency_buf[(uint64_t) (num_iterations / 2)] / BASE_TSC),
 	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.8)] / BASE_TSC),
 	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.9)] / BASE_TSC),

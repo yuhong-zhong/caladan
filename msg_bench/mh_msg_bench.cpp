@@ -469,21 +469,21 @@ void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_ite
 		uint64_t now = __rdtsc();
 		latency_buf[i] = now - payload;
 	}
-	sort(latency_buf, latency_buf + num_iterations);
+	sort(latency_buf, latency_buf + num_samples);
 	printf("min: %lu ns, p10: %lu ns, p20: %lu ns, p30: %lu ns, p40: %lu ns, p50: %lu ns, "
 	       "p60: %lu ns, p70: %lu ns, p80: %lu ns, p90: %lu ns, p99: %lu ns, max: %lu ns\n",
 	       (uint64_t) (latency_buf[0] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.1)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.2)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.3)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.4)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.5)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.6)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.7)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.8)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.9)] / BASE_TSC),
-	       (uint64_t) (latency_buf[(uint64_t) (num_iterations * 0.99)] / BASE_TSC),
-	       (uint64_t) (latency_buf[num_iterations - 1] / BASE_TSC));
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.1)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.2)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.3)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.4)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.5)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.6)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.7)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.8)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.9)] / BASE_TSC),
+	       (uint64_t) (latency_buf[(uint64_t) (num_samples * 0.99)] / BASE_TSC),
+	       (uint64_t) (latency_buf[num_samples - 1] / BASE_TSC));
 }
 
 void sender_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations, uint64_t delay_tsc) {

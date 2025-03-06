@@ -425,8 +425,6 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 			pause();
 		}
 		BUG_ON(cmd != i);
-		// msg_send(&reverse_chan, cmd, payload);
-		huge_msg_send(&reverse_chan, cmd, payload);
 
 		if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
 			// uint64_t now = __rdtsc();
@@ -458,6 +456,9 @@ void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_ite
 	uint64_t cmd;
 	unsigned long payload;
 	uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
+	BUG_ON(latency_buf == NULL);
+	memset(latency_buf, 0, num_samples * sizeof(uint64_t));
+
 	for (uint64_t i = 0; i < num_samples; i++) {
 		// while (!msg_recv(reverse_chan, &cmd, &payload)) {
 		// 	pause();

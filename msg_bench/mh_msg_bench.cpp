@@ -405,7 +405,7 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 	cxl_buf += HUGE_PAGE_SIZE;
 	msg_init_out(&reverse_chan, (struct lrpc_msg *) cxl_buf, CHAN_SIZE, reverse_recv_head_wb);
 
-	// const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
+	const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
 	// uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
 	// BUG_ON(latency_buf == NULL);
 	// memset(latency_buf, 0, num_samples * sizeof(uint64_t));
@@ -428,10 +428,14 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 		// msg_send(&reverse_chan, cmd, payload);
 		huge_msg_send(&reverse_chan, cmd, payload);
 
-		// if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
-		// 	uint64_t now = __rdtsc();
-		// 	latency_buf[lat_index++] = now - payload;
-		// }
+		if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
+			// uint64_t now = __rdtsc();
+			// latency_buf[lat_index++] = now - payload;
+
+			// bool sent = msg_send(&reverse_chan, cmd, payload);
+			bool sent = huge_msg_send(&reverse_chan, cmd, payload);
+			BUG_ON(!sent);
+		}
 	}
 
 	// sort(latency_buf, latency_buf + num_samples);
@@ -449,10 +453,12 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 }
 
 void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_iterations) {
+	const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
+
 	uint64_t cmd;
 	unsigned long payload;
-	uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_iterations * sizeof(uint64_t));
-	for (uint64_t i = 0; i < num_iterations; i++) {
+	uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
+	for (uint64_t i = 0; i < num_samples; i++) {
 		// while (!msg_recv(reverse_chan, &cmd, &payload)) {
 		// 	pause();
 		// }

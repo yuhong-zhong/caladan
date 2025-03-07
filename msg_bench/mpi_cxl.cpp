@@ -661,11 +661,11 @@ int main(int argc, char *argv[]) {
 	BUG_ON(lrpc_in_buf == NULL);
 	for (int i = 0; i < thread_count; ++i) {
 		memset(&lrpc_chan_outs[i], 0, sizeof(struct lrpc_chan_out));
-		lrpc_init_out(&lrpc_chan_outs[i], (struct lrpc_msg *) (lrpc_out_buf + i * HUGE_PAGE_SIZE * 2, CHAN_SIZE),
+		lrpc_init_out(&lrpc_chan_outs[i], (struct lrpc_msg *) (lrpc_out_buf + i * HUGE_PAGE_SIZE * 2),
 		              CHAN_SIZE, (uint32_t *) (lrpc_out_buf + i * HUGE_PAGE_SIZE * 2 + HUGE_PAGE_SIZE));
 
 		memset(&lrpc_chan_ins[i], 0, sizeof(struct lrpc_chan_in));
-		lrpc_init_in(&lrpc_chan_ins[i], (struct lrpc_msg *) (lrpc_in_buf + i * HUGE_PAGE_SIZE * 2, CHAN_SIZE),
+		lrpc_init_in(&lrpc_chan_ins[i], (struct lrpc_msg *) (lrpc_in_buf + i * HUGE_PAGE_SIZE * 2),
 		             CHAN_SIZE, (uint32_t *) (lrpc_in_buf + i * HUGE_PAGE_SIZE * 2 + HUGE_PAGE_SIZE));
 	}
 

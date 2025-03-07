@@ -604,8 +604,8 @@ int main(int argc, char *argv[]) {
 		BUG_ON(size % BLOCK_SIZE != 0);
 	}
 	for (int i = 0; i < group_size; ++i) {
-		printf("rank %d send to %d: %lu B\n", rank, i, send_to[i]);
-		printf("rank %d receive from %d: %lu B\n", rank, i, receive_from[i]);
+		printf("rank %d send to      rank %d: %lu B\n", rank, i, send_to[i]);
+		printf("rank %d receive from rank %d: %lu B\n", rank, i, receive_from[i]);
 	}
 
 	int fd = open(CXL_DAX, O_RDWR);
@@ -825,7 +825,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	for (int i = 0; i < thread_count; ++i) {
-		while (!thread_available[i]) {
+		if (!thread_available[i]) {
 			uint64_t cmd;
 			unsigned long payload;
 			while (!lrpc_recv(&lrpc_chan_ins[i], &cmd, &payload)) {

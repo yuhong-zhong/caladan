@@ -627,7 +627,9 @@ int main(int argc, char *argv[]) {
 
 	// initialize memory channels
 	struct msg_chan_out *group_chan_outs = (struct msg_chan_out *) malloc(group_size * sizeof(struct msg_chan_out));
+	BUG_ON(group_chan_outs == NULL);
 	struct msg_chan_in *group_chan_ins = (struct msg_chan_in *) malloc(group_size * sizeof(struct msg_chan_in));
+	BUG_ON(group_chan_ins == NULL);
 	BUG_ON(CHAN_SIZE * sizeof(struct lrpc_msg) > HUGE_PAGE_SIZE);
 	for (int i = 0; i < group_size; ++i) {
 		memset(&group_chan_outs[i], 0, sizeof(struct msg_chan_out));
@@ -653,8 +655,10 @@ int main(int argc, char *argv[]) {
 	// initialize per-thread lrpc channels
 	vector<struct lrpc_chan_out> lrpc_chan_outs(thread_count);
 	vector<struct lrpc_chan_in> lrpc_chan_ins(thread_count);
-	uint8_t *lrpc_out_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, thread_count * HUGE_PAGE_SIZE);
-	uint8_t *lrpc_in_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, thread_count * HUGE_PAGE_SIZE);
+	uint8_t *lrpc_out_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, thread_count * HUGE_PAGE_SIZE * 2);
+	BUG_ON(lrpc_out_buf == NULL);
+	uint8_t *lrpc_in_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, thread_count * HUGE_PAGE_SIZE * 2);
+	BUG_ON(lrpc_in_buf == NULL);
 	for (int i = 0; i < thread_count; ++i) {
 		memset(&lrpc_chan_outs[i], 0, sizeof(struct lrpc_chan_out));
 		lrpc_init_out(&lrpc_chan_outs[i], (struct lrpc_msg *) (lrpc_out_buf + i * HUGE_PAGE_SIZE * 2, CHAN_SIZE),

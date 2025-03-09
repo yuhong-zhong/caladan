@@ -683,6 +683,7 @@ int main(int argc, char *argv[]) {
 	for (int i = 0; i < thread_count; ++i) {
 		threads.push_back(thread(send_recv_thread_fn, lrpc_out_buf + i * HUGE_PAGE_SIZE * 2, lrpc_in_buf + i * HUGE_PAGE_SIZE * 2));
 	}
+	// sleep(1);
 
 	// signal ready and synchronize
 	printf("rank %d ready\n", rank);
@@ -821,7 +822,7 @@ int main(int argc, char *argv[]) {
 	}
 	printf("rank %d overflow_send_to size: %lu\n", rank, overflow_send_to.size());
 	while (!overflow_send_to.empty()) {
-		BUG_ON(send_ordering != SEND_ORDERED);
+		BUG_ON(send_ordering == SEND_ORDERED);
 		uint64_t overflow_size = overflow_send_to.size();
 		for (int i = 0; i < overflow_size; ++i) {
 			int cur_rank = overflow_send_to.front();

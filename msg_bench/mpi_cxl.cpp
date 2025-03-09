@@ -54,7 +54,7 @@ using namespace std::chrono;
 #define HUGE_PAGE_SIZE (1ul << HUGE_PAGE_SHIFT)
 #define HUGE_PAGE_MASK (HUGE_PAGE_SIZE - 1ul)
 
-#define BLOCK_SIZE HUGE_PAGE_SIZE
+#define BLOCK_SIZE (64ul << 20ul)
 #define NUM_BLOCKS (BUF_SIZE / BLOCK_SIZE)
 
 #define ROUND_DOWN(a, b) ((a) / (b) * (b))
@@ -559,9 +559,16 @@ bool has_pending_receive(const vector<uint64_t> &receive_from) {
 	return false;
 }
 
+enum send_ordering_policy {
+	SEND_UNORDERED = 0,
+	SEND_ORDERED,
+	SEND_ONCE,
+	NR_SEND_POLICY,
+};
+
 int main(int argc, char *argv[]) {
-	if (argc != 6) {
-		fprintf(stderr, "Usage: %s <group size> <rank> <thread count> <send-to list> <receive-from list>\n", argv[0]);
+	if (argc != 7) {
+		fprintf(stderr, "Usage: %s <group size> <rank> <thread count> <send-to list> <receive-from list> <send ordering>\n", argv[0]);
 		exit(1);
 	}
 	int group_size = atoi(argv[1]);
@@ -571,10 +578,12 @@ int main(int argc, char *argv[]) {
 	string send_to_list(argv[4]);
 	// receive-from list format: "0:4096,1:8192", which means receiving 4096B from rank 0 and 8192B from rank 1
 	string receive_from_list(argv[5]);
+	int send_ordering = atoi(argv[6]);
 
 	BUG_ON(group_size <= 1);
 	BUG_ON(rank < 0 || rank >= group_size);
 	BUG_ON(thread_count <= 0);
+	BUG_ON(send_ordering < 0 || send_ordering >= NR_SEND_POLICY);
 
 	vector<uint64_t> send_to(group_size, 0);
 	vector<uint64_t> receive_from(group_size, 0);
@@ -701,67 +710,121 @@ int main(int argc, char *argv[]) {
 
 	// sending
 	printf("rank %d sending\n", rank);
-	vector<uint64_t> thread_to_rank(thread_count, 0);
-	deque<uint64_t> overflow_send_to;
+	vector<int> thread_to_rank(thread_count, -1);
+	deque<int> overflow_send_to;  // depending on ordering
+	int cur_thread = 0;
+	int cur_rank = 0;
 	while (has_pending_send(send_to)) {
-		int thread_used = 0;
-		int cur_rank = 0;
-		while (thread_used < thread_count) {
-			// find a rank to send to
-			for (int j = 0; j < group_size; ++j) {
-				if (send_to[cur_rank] == 0)
-					cur_rank = (cur_rank + 1) % group_size;
-				else
-					break;
-			}
-			if (send_to[cur_rank] == 0)
-				break;
-
-			// TODO: use actual data and offset
-			uint64_t buf_index = buf_indices[rank];
-			buf_indices[rank] = (buf_index + 1) % NUM_BLOCKS;
-
-			bool sent = lrpc_send(&lrpc_chan_outs[thread_used], LRPC_CMD_WRITE, (unsigned long) buf_areas[rank] + buf_index * BLOCK_SIZE);
-			BUG_ON(!sent);
-			thread_to_rank[thread_used] = cur_rank;
-			send_to[cur_rank] -= BLOCK_SIZE;
-
-			cur_rank = (cur_rank + 1) % group_size;
-			thread_used++;
-		}
-		BUG_ON(thread_used == 0);
-
-		uint64_t overflow_size = overflow_send_to.size();
-		for (int i = 0; i < overflow_size; ++i) {
-			uint64_t cur_rank = overflow_send_to.front();
-			overflow_send_to.pop_front();
-
-			bool sent = msg_send(&group_chan_outs[cur_rank], MSG_CMD_SEND, rank);
-			if (!sent)
-				overflow_send_to.push_back(cur_rank);
-		}
-		for (int i = 0; i < thread_used; ++i) {
+		if (thread_to_rank[cur_thread] != -1) {
+			// thread is busy, wait for it to finish
 			uint64_t cmd;
 			unsigned long payload;
-			while (!lrpc_recv(&lrpc_chan_ins[i], &cmd, &payload)) {
+			switch (send_ordering) {
+			case SEND_ORDERED:
+			{
+				while (!lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload)) {
+					pause();
+				}
+				BUG_ON(cmd != LRPC_CMD_DONE);
+				break;
+			}
+			case SEND_UNORDERED:
+			case SEND_ONCE:
+			{
+				bool received = lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload);
+				if (!received) {
+					cur_thread = (cur_thread + 1) % thread_count;
+					continue;
+				}
+				BUG_ON(cmd != LRPC_CMD_DONE);
+				break;
+			}
+			default:
+				BUG_ON(true);
+			}
+
+			// send to the target rank
+			int target_rank = thread_to_rank[cur_thread];
+			switch (send_ordering) {
+			case SEND_ORDERED:
+			{
+				while (!msg_send(&group_chan_outs[target_rank], MSG_CMD_SEND, rank)) {
+					pause();
+				}
+				break;
+			}
+			case SEND_UNORDERED:
+			{
+				bool sent = msg_send(&group_chan_outs[target_rank], MSG_CMD_SEND, rank);
+				if (!sent)
+					overflow_send_to.push_back(target_rank);
+				break;
+			}
+			case SEND_ONCE:
+				overflow_send_to.push_back(target_rank);
+				break;
+			default:
+				BUG_ON(true);
+			}
+		}
+
+		// find the target rank with pending send
+		while (send_to[cur_rank] == 0) {
+			cur_rank = (cur_rank + 1) % group_size;
+		}
+		BUG_ON(send_to[cur_rank] == 0);
+
+		uint64_t buf_index = buf_indices[rank];
+		buf_indices[rank] = (buf_index + 1) % NUM_BLOCKS;
+
+		bool sent = lrpc_send(&lrpc_chan_outs[cur_thread], LRPC_CMD_WRITE, (unsigned long) buf_areas[rank] + buf_index * BLOCK_SIZE);
+		BUG_ON(!sent);
+		thread_to_rank[cur_thread] = cur_rank;
+		send_to[cur_rank] -= BLOCK_SIZE;
+
+		cur_thread = (cur_thread + 1) % thread_count;
+		cur_rank = (cur_rank + 1) % group_size;
+	}
+	for (int i = 0; i < thread_count; ++i) {
+		if (thread_to_rank[cur_thread] != -1) {
+			uint64_t cmd;
+			unsigned long payload;
+			while (!lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload)) {
 				pause();
 			}
 			BUG_ON(cmd != LRPC_CMD_DONE);
 
-			// TODO: the pipe could be blocked here
-			bool sent = msg_send(&group_chan_outs[thread_to_rank[i]], MSG_CMD_SEND, rank);
-			if (!sent)
-				overflow_send_to.push_back(thread_to_rank[i]);
+			int target_rank = thread_to_rank[cur_thread];
+			switch (send_ordering) {
+			case SEND_ORDERED:
+			{
+				while (!msg_send(&group_chan_outs[target_rank], MSG_CMD_SEND, rank)) {
+					pause();
+				}
+				break;
+			}
+			case SEND_UNORDERED:
+			{
+				bool sent = msg_send(&group_chan_outs[target_rank], MSG_CMD_SEND, rank);
+				if (!sent)
+					overflow_send_to.push_back(target_rank);
+				break;
+			}
+			case SEND_ONCE:
+				overflow_send_to.push_back(target_rank);
+				break;
+			default:
+				BUG_ON(true);
+			}
 		}
-		for (int i = 0; i < group_size; ++i) {
-			msg_out_sync(&group_chan_outs[i]);
-		}
+		cur_thread = (cur_thread + 1) % thread_count;
 	}
 	printf("rank %d overflow_send_to size: %lu\n", rank, overflow_send_to.size());
 	while (!overflow_send_to.empty()) {
+		BUG_ON(send_ordering != SEND_ORDERED);
 		uint64_t overflow_size = overflow_send_to.size();
 		for (int i = 0; i < overflow_size; ++i) {
-			uint64_t cur_rank = overflow_send_to.front();
+			int cur_rank = overflow_send_to.front();
 			overflow_send_to.pop_front();
 
 			bool sent = msg_send(&group_chan_outs[cur_rank], MSG_CMD_SEND, rank);
@@ -773,12 +836,15 @@ int main(int argc, char *argv[]) {
 		}
 		pause();
 	}
+	for (int i = 0; i < group_size; ++i) {
+		msg_out_sync(&group_chan_outs[i]);
+	}
 
 	// receiving
 	printf("rank %d receiving\n", rank);
 	vector<bool> thread_available(thread_count, true);
+	cur_rank = 0;
 	while (has_pending_receive(receive_from)) {
-		int cur_rank = 0;
 		for (int tid = 0; tid < thread_count; ++tid) {
 			if (!has_pending_receive(receive_from))
 				break;

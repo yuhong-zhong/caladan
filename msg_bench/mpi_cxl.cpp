@@ -840,6 +840,7 @@ int main(int argc, char *argv[]) {
 	for (int i = 0; i < group_size; ++i) {
 		msg_out_sync(&group_chan_outs[i]);
 	}
+	printf("rank %d done sending, time: %lu ms\n", rank, (uint64_t) ((__rdtsc() - start) / BASE_TSC / 1e6));
 
 	// receiving
 	printf("rank %d receiving\n", rank);
@@ -901,6 +902,7 @@ int main(int argc, char *argv[]) {
 			BUG_ON(cmd != LRPC_CMD_DONE);
 		}
 	}
+	printf("rank %d done receiving, time: %lu ms\n", rank, (uint64_t) ((__rdtsc() - start) / BASE_TSC / 1e6));
 
 	// signal finished and synchronize
 	printf("rank %d finished\n", rank);

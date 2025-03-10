@@ -38,7 +38,6 @@ using namespace std::chrono;
 #define BUF_SIZE (4ul << 30ul)
 
 #define CXL_MEM_SIZE (64ul << 30ul)
-#define CXL_DAX "/dev/dax0.0"
 
 #define BASE_TSC (2.2l)
 
@@ -622,7 +621,7 @@ int main(int argc, char *argv[]) {
 		printf("rank %d receive from rank %d: %lu B\n", rank, i, receive_from[i]);
 	}
 
-	int fd = open(CXL_DAX, O_RDWR);
+	int fd = open(cxl_dax_path, O_RDWR);
 	BUG_ON(fd < 0);
 	uint8_t *cxl_buf = (uint8_t *) mmap(NULL, CXL_MEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	BUG_ON(cxl_buf == MAP_FAILED);

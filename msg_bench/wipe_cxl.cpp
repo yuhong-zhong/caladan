@@ -147,13 +147,14 @@ do {						\
 
 
 int main(int argc, char *argv[]) {
-	if (argc != 2) {
-		fprintf(stderr, "Usage: %s <CXL size (GB)>\n", argv[0]);
+	if (argc != 3) {
+		fprintf(stderr, "Usage: %s <CXL dex> <CXL size (GB)>\n", argv[0]);
 		exit(1);
 	}
-        uint64_t cxl_size = atoll(argv[1]) << 30ul;
+	char *cxl_dax_path = argv[1];
+        uint64_t cxl_size = atoll(argv[2]) << 30ul;
 
-	int fd = open(CXL_DAX, O_RDWR);
+	int fd = open(cxl_dax_path, O_RDWR);
 	BUG_ON(fd < 0);
 	uint8_t *cxl_buf = (uint8_t *) mmap(NULL, cxl_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	BUG_ON(cxl_buf == MAP_FAILED);

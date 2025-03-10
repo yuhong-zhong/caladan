@@ -70,12 +70,12 @@ static int run_init_handlers(const char *phase, const struct init_entry *h,
 {
 	int i, ret;
 
-	log_debug("entering '%s' init phase", phase);
+	log_info("entering '%s' init phase", phase);
 	for (i = 0; i < nr; i++) {
-		log_debug("init -> %s", h[i].name);
+		log_info("init -> %s", h[i].name);
 		ret = h[i].init();
 		if (ret) {
-			log_debug("failed, ret = %d", ret);
+			log_info("failed, ret = %d", ret);
 			return ret;
 		}
 	}

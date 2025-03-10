@@ -33,13 +33,17 @@ static int cpu_scan_topology(void)
 
 	/* How many NUMA nodes? */
 	if (sysfs_parse_bitlist("/sys/devices/system/node/online",
-			        numa_mask, NNUMA))
-		return -EIO;
-	bitmap_for_each_set(numa_mask, NNUMA, i) {
-		numa_count++;
-		if (numa_count <= i) {
-			log_err("cpu: can't support non-contiguous NUMA mask.");
-			return -EINVAL;
+			        numa_mask, NNUMA)) {
+		// HOTFIX for AMD
+		bitmap_set(numa_mask, 0);
+		numa_count = 1;
+	} else {
+		bitmap_for_each_set(numa_mask, NNUMA, i) {
+			numa_count++;
+			if (numa_count <= i) {
+				log_err("cpu: can't support non-contiguous NUMA mask.");
+				return -EINVAL;
+			}
 		}
 	}
 

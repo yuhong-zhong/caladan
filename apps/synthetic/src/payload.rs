@@ -73,11 +73,12 @@ impl SyntheticProtocol {
 
 impl Payload {
     pub fn serialize_into<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        let val = self.index as u8;
         writer.write_u64::<BigEndian>(self.work_iterations)?;
         writer.write_u64::<BigEndian>(self.index)?;
         writer.write_u64::<BigEndian>(self.randomness)?;
         writer.write_u64::<BigEndian>(self.extra_payload_size)?;
-        writer.write_all(&vec![0; self.extra_payload_size as usize])?;
+        writer.write_all(&vec![val; self.extra_payload_size as usize])?;
         Ok(())
     }
 
@@ -88,6 +89,16 @@ impl Payload {
             randomness: reader.read_u64::<BigEndian>()?,
             extra_payload_size: reader.read_u64::<BigEndian>()?,
         };
+
+        // let expected_byte = p.index as u8;
+        // // Read and check each byte one by one.
+        // for i in 0..p.extra_payload_size {
+        //     let mut b = [0u8; 1];
+        //     reader.read_exact(&mut b)?;
+        //     if b[0] != expected_byte {
+        //         println!("Error: expected byte {}, got byte {} at index {}", expected_byte, b[0], i);
+        //     }
+        // }
         return Ok(p);
     }
 }

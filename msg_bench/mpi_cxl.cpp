@@ -566,8 +566,8 @@ enum send_ordering_policy {
 };
 
 int main(int argc, char *argv[]) {
-	if (argc != 9) {
-		fprintf(stderr, "Usage: %s <CXL dax> <group size> <rank> <thread count> <block size> <send-to list> <receive-from list> <send ordering>\n", argv[0]);
+	if (argc != 10) {
+		fprintf(stderr, "Usage: %s <CXL dax> <group size> <rank> <thread count> <block size> <send-to list> <receive-from list> <send ordering> <compute size>\n", argv[0]);
 		exit(1);
 	}
 	char *cxl_dax_path = argv[1];
@@ -581,6 +581,7 @@ int main(int argc, char *argv[]) {
 	// receive-from list format: "0:4096,1:8192", which means receiving 4096B from rank 0 and 8192B from rank 1
 	string receive_from_list(argv[7]);
 	int send_ordering = atoi(argv[8]);
+	uint64_t compute_size = stoll(argv[9]);
 
 	BUG_ON(group_size <= 1);
 	BUG_ON(rank < 0 || rank >= group_size);
@@ -588,6 +589,7 @@ int main(int argc, char *argv[]) {
 	BUG_ON(block_size % HUGE_PAGE_SIZE != 0);
 	BUG_ON(block_size == 0);
 	BUG_ON(send_ordering < 0 || send_ordering >= NR_SEND_POLICY);
+	BUG_ON(compute_size % HUGE_PAGE_SIZE != 0);
 
 	vector<uint64_t> send_to(group_size, 0);
 	vector<uint64_t> receive_from(group_size, 0);
@@ -689,6 +691,20 @@ int main(int argc, char *argv[]) {
 	}
 	// sleep(1);
 
+	// initialize computer buffer
+	uint8_t *compute_buf = (uint8_t *) aligned_alloc(HUGE_PAGE_SIZE, compute_size);
+	BUG_ON(compute_buf == NULL);
+	for (uint64_t i = 0; i < compute_size / sizeof(uint64_t); i += sizeof(uint64_t)) {
+		compute_buf[i + 0] = '1';
+		compute_buf[i + 1] = '2';
+		compute_buf[i + 2] = '3';
+		compute_buf[i + 3] = '4';
+		compute_buf[i + 4] = '5';
+		compute_buf[i + 5] = '6';
+		compute_buf[i + 6] = '7';
+		compute_buf[i + 7] = '\0';
+	}
+
 	// signal ready and synchronize
 	printf("rank %d ready\n", rank);
 	if (rank != 0) {
@@ -712,6 +728,13 @@ int main(int argc, char *argv[]) {
 		clflushopt(ready_arr);
 	}
 	uint64_t start = __rdtsc();
+
+	// computing
+	printf("rank %d computing\n", rank);
+	for (uint64_t i = 0; i < compute_size / sizeof(uint64_t); i += sizeof(uint64_t)) {
+		volatile uint64_t val = stoll((char *) (compute_buf + i * sizeof(uint64_t)));
+	}
+	printf("rank %d done computing, time: %lu ms\n", rank, (uint64_t) ((__rdtsc() - start) / BASE_TSC / 1e6));
 
 	// sending
 	printf("rank %d sending\n", rank);

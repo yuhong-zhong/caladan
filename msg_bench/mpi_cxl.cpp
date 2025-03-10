@@ -695,14 +695,14 @@ int main(int argc, char *argv[]) {
 	uint8_t *compute_buf = (uint8_t *) aligned_alloc(HUGE_PAGE_SIZE, compute_size);
 	BUG_ON(compute_buf == NULL);
 	for (uint64_t i = 0; i < compute_size / sizeof(uint64_t); i += sizeof(uint64_t)) {
-		compute_buf[i + 0] = '1';
-		compute_buf[i + 1] = '2';
-		compute_buf[i + 2] = '3';
-		compute_buf[i + 3] = '4';
-		compute_buf[i + 4] = '5';
-		compute_buf[i + 5] = '6';
-		compute_buf[i + 6] = '7';
-		compute_buf[i + 7] = '\0';
+		compute_buf[i * sizeof(uint64_t) + 0] = '1';
+		compute_buf[i * sizeof(uint64_t)  + 1] = '2';
+		compute_buf[i * sizeof(uint64_t)  + 2] = '3';
+		compute_buf[i * sizeof(uint64_t)  + 3] = '4';
+		compute_buf[i * sizeof(uint64_t)  + 4] = '5';
+		compute_buf[i * sizeof(uint64_t)  + 5] = '6';
+		compute_buf[i * sizeof(uint64_t)  + 6] = '7';
+		compute_buf[i * sizeof(uint64_t)  + 7] = '\0';
 	}
 
 	// signal ready and synchronize

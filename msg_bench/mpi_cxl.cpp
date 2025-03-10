@@ -54,9 +54,6 @@ using namespace std::chrono;
 #define HUGE_PAGE_SIZE (1ul << HUGE_PAGE_SHIFT)
 #define HUGE_PAGE_MASK (HUGE_PAGE_SIZE - 1ul)
 
-#define BLOCK_SIZE (64ul << 20ul)
-#define NUM_BLOCKS (BUF_SIZE / BLOCK_SIZE)
-
 #define ROUND_DOWN(a, b) ((a) / (b) * (b))
 #define ROUND_UP(a, b) (((a) + (b) - 1) / (b) * (b))
 
@@ -493,6 +490,9 @@ enum lrpc_command {
 	LRPC_CMD_STOP = 3,
 };
 
+uint64_t block_size;
+uint64_t num_blocks;
+
 void send_recv_thread_fn(uint8_t *lrpc_in_buf, uint8_t *lrpc_out_buf) {
 	struct lrpc_chan_in chan_in;
 	memset(&chan_in, 0, sizeof(chan_in));
@@ -502,8 +502,8 @@ void send_recv_thread_fn(uint8_t *lrpc_in_buf, uint8_t *lrpc_out_buf) {
 	memset(&chan_out, 0, sizeof(chan_out));
 	lrpc_init_out(&chan_out, (struct lrpc_msg *) lrpc_out_buf, CHAN_SIZE, (uint32_t *) (lrpc_out_buf + HUGE_PAGE_SIZE));
 
-	uint8_t *local_buf = (uint8_t *) aligned_alloc(HUGE_PAGE_SIZE, BLOCK_SIZE);
-	memset(local_buf, 0, BLOCK_SIZE);
+	uint8_t *local_buf = (uint8_t *) aligned_alloc(HUGE_PAGE_SIZE, block_size);
+	memset(local_buf, 0, block_size);
 
 	while (true) {
 		uint64_t cmd;
@@ -517,15 +517,15 @@ void send_recv_thread_fn(uint8_t *lrpc_in_buf, uint8_t *lrpc_out_buf) {
 		bool sent;
 		switch (cmd) {
 		case LRPC_CMD_READ:
-			batch_clflushopt(addr, BLOCK_SIZE);
-			memcpy(local_buf, addr, BLOCK_SIZE);
+			batch_clflushopt(addr, block_size);
+			memcpy(local_buf, addr, block_size);
 
 			sent = lrpc_send(&chan_out, LRPC_CMD_DONE, payload);
 			BUG_ON(!sent);
 			break;
 		case LRPC_CMD_WRITE:
-			memcpy(addr, local_buf, BLOCK_SIZE);
-			batch_clflushopt(addr, BLOCK_SIZE);
+			memcpy(addr, local_buf, block_size);
+			batch_clflushopt(addr, block_size);
 
 			sent = lrpc_send(&chan_out, LRPC_CMD_DONE, payload);
 			BUG_ON(!sent);
@@ -567,22 +567,27 @@ enum send_ordering_policy {
 };
 
 int main(int argc, char *argv[]) {
-	if (argc != 7) {
-		fprintf(stderr, "Usage: %s <group size> <rank> <thread count> <send-to list> <receive-from list> <send ordering>\n", argv[0]);
+	if (argc != 9) {
+		fprintf(stderr, "Usage: %s <CXL dax> <group size> <rank> <thread count> <block size> <send-to list> <receive-from list> <send ordering>\n", argv[0]);
 		exit(1);
 	}
-	int group_size = atoi(argv[1]);
-	int rank = atoi(argv[2]);
-	int thread_count = atoi(argv[3]);
+	char *cxl_dax_path = argv[1];
+	int group_size = atoi(argv[2]);
+	int rank = atoi(argv[3]);
+	int thread_count = atoi(argv[4]);
+	block_size = stoll(argv[5]);
+	num_blocks = BUF_SIZE / block_size;
 	// send-to list format: "0:4096,1:8192", which means sending 4096B to rank 0 and 8192B to rank 1
-	string send_to_list(argv[4]);
+	string send_to_list(argv[6]);
 	// receive-from list format: "0:4096,1:8192", which means receiving 4096B from rank 0 and 8192B from rank 1
-	string receive_from_list(argv[5]);
-	int send_ordering = atoi(argv[6]);
+	string receive_from_list(argv[7]);
+	int send_ordering = atoi(argv[8]);
 
 	BUG_ON(group_size <= 1);
 	BUG_ON(rank < 0 || rank >= group_size);
 	BUG_ON(thread_count <= 0);
+	BUG_ON(block_size % HUGE_PAGE_SIZE != 0);
+	BUG_ON(block_size == 0);
 	BUG_ON(send_ordering < 0 || send_ordering >= NR_SEND_POLICY);
 
 	vector<uint64_t> send_to(group_size, 0);
@@ -599,7 +604,7 @@ int main(int argc, char *argv[]) {
 		BUG_ON(rank < 0 || rank >= group_size);
 		uint64_t size = stoll(size_str);
 		send_to[rank] = size;
-		BUG_ON(size % BLOCK_SIZE != 0);
+		BUG_ON(size % block_size != 0);
 	}
 	while (getline(receive_from_stream, token, ',')) {
 		istringstream token_stream(token);
@@ -610,7 +615,7 @@ int main(int argc, char *argv[]) {
 		BUG_ON(rank < 0 || rank >= group_size);
 		uint64_t size = stoll(size_str);
 		receive_from[rank] = size;
-		BUG_ON(size % BLOCK_SIZE != 0);
+		BUG_ON(size % block_size != 0);
 	}
 	for (int i = 0; i < group_size; ++i) {
 		printf("rank %d send to      rank %d: %lu B\n", rank, i, send_to[i]);
@@ -776,12 +781,12 @@ int main(int argc, char *argv[]) {
 		BUG_ON(send_to[cur_rank] == 0);
 
 		uint64_t buf_index = buf_indices[rank];
-		buf_indices[rank] = (buf_index + 1) % NUM_BLOCKS;
+		buf_indices[rank] = (buf_index + 1) % num_blocks;
 
-		bool sent = lrpc_send(&lrpc_chan_outs[cur_thread], LRPC_CMD_WRITE, (unsigned long) buf_areas[rank] + buf_index * BLOCK_SIZE);
+		bool sent = lrpc_send(&lrpc_chan_outs[cur_thread], LRPC_CMD_WRITE, (unsigned long) buf_areas[rank] + buf_index * block_size);
 		BUG_ON(!sent);
 		thread_to_rank[cur_thread] = cur_rank;
-		send_to[cur_rank] -= BLOCK_SIZE;
+		send_to[cur_rank] -= block_size;
 
 		cur_thread = (cur_thread + 1) % thread_count;
 		cur_rank = (cur_rank + 1) % group_size;
@@ -882,12 +887,12 @@ int main(int argc, char *argv[]) {
 			BUG_ON(receive_from[cur_rank] == 0);
 
 			uint64_t buf_index = buf_indices[cur_rank];
-			buf_indices[cur_rank] = (buf_index + 1) % NUM_BLOCKS;
+			buf_indices[cur_rank] = (buf_index + 1) % num_blocks;
 
-			bool sent = lrpc_send(&lrpc_chan_outs[tid], LRPC_CMD_READ, (unsigned long) buf_areas[cur_rank] + buf_index * BLOCK_SIZE);
+			bool sent = lrpc_send(&lrpc_chan_outs[tid], LRPC_CMD_READ, (unsigned long) buf_areas[cur_rank] + buf_index * block_size);
 			BUG_ON(!sent);
 			thread_available[tid] = false;
-			receive_from[cur_rank] -= BLOCK_SIZE;
+			receive_from[cur_rank] -= block_size;
 
 			cur_rank = (cur_rank + 1) % group_size;
 		}

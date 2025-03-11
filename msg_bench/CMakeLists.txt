@@ -12,7 +12,6 @@ add_compile_options(-mavx512f)
 
 add_executable(msg_bench msg_bench.cpp)
 add_executable(mh_msg_bench mh_msg_bench.cpp)
-add_executable(streaming_word_count streaming_word_count.cpp)
 add_executable(rt_mpi_cxl rt_mpi_cxl.cpp)
 
 add_executable(wipe_cxl wipe_cxl.cpp)

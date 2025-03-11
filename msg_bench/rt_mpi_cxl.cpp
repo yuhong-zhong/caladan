@@ -641,6 +641,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 			unsigned long payload;
 			bool received = lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload);
 			if (received) {
+				BUG_ON(cmd != LRPC_CMD_DONE);
 				thread_available[cur_thread] = true;
 				bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
 				if (!sent)
@@ -659,7 +660,20 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 		buf_index = (buf_index + 1) % num_blocks;
 		cur_thread = (cur_thread + 1) % thread_count;
 	}
-	printf("rank %d send coordinator finished sending\n", my_rank);
+	for (cur_thread = 0; cur_thread < thread_count; ++cur_thread) {
+		if (thread_available[cur_thread])
+			continue;
+
+		uint64_t cmd;
+		unsigned long payload;
+		while (!lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload)) {
+			pause();
+		}
+		BUG_ON(cmd != LRPC_CMD_DONE);
+		bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
+		if (!sent)
+			overflow_queue.push_back(thread_to_iter[cur_thread]);
+	}
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
@@ -668,7 +682,6 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 		if (!sent)
 			overflow_queue.push_back(iteration);
 	}
-	printf("rank %d send coordinator finished sending overflow\n", my_rank);
 
 	for (int i = 0; i < thread_count; ++i) {
 		bool sent = lrpc_send(&lrpc_chan_outs[i], LRPC_CMD_STOP, 0);
@@ -677,7 +690,6 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 	for (int i = 0; i < thread_count; ++i) {
 		threads[i].join();
 	}
-	printf("rank %d send coordinator finished joining threads\n", my_rank);
 }
 
 void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, struct msg_chan_out *group_chan_out) {
@@ -759,12 +771,10 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		buf_index = (buf_index + 1) % num_blocks;
 
 		received_per_iter[iteration] += block_size;
-		printf("rank %d received iteration %lu, received_per_iter[iteration]: %lu\n", my_rank, iteration, received_per_iter[iteration]);
 		if (received_per_iter[iteration] == data_size) {
 			received_iter++;
 		}
 	}
-	printf("rank %d recv coordinator finished receiving\n", my_rank);
 	for (cur_thread = 0; cur_thread < thread_count; ++cur_thread) {
 		if (thread_available[cur_thread])
 			continue;
@@ -790,7 +800,6 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 				end_tsc_arr[thread_to_iter[cur_thread]] = __rdtsc();
 		}
 	}
-	printf("rank %d recv coordinator finished receiving overflow\n", my_rank);
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
@@ -799,7 +808,6 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		if (!sent)
 			overflow_queue.push_back(iteration);
 	}
-	printf("rank %d recv coordinator finished sending overflow\n", my_rank);
 	for (int i = 0; i < thread_count; ++i) {
 		bool sent = lrpc_send(&lrpc_chan_outs[i], LRPC_CMD_STOP, 0);
 		BUG_ON(!sent);
@@ -807,7 +815,6 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 	for (int i = 0; i < thread_count; ++i) {
 		threads[i].join();
 	}
-	printf("rank %d recv coordinator finished joining threads\n", my_rank);
 }
 
 int main(int argc, char *argv[]) {
@@ -918,9 +925,19 @@ int main(int argc, char *argv[]) {
 			latency_arr[i] = end_tsc_arr[i] - start_tsc_arr[i];
 		}
 		std::sort(latency_arr, latency_arr + num_iterations);
-		printf("p0: %lu, p10: %lu, p20: %lu, p30: %lu, p40: %lu, p50: %lu, p60: %lu, p70: %lu, p80: %lu, p90: %lu, p100: %lu\n",
-		       latency_arr[0], latency_arr[(uint64_t) (num_iterations * 0.1)], latency_arr[(uint64_t) (num_iterations * 0.2)], latency_arr[(uint64_t) (num_iterations * 0.3)], latency_arr[(uint64_t) (num_iterations * 0.4)], latency_arr[(uint64_t) (num_iterations * 0.5)],
-		       latency_arr[(uint64_t) (num_iterations * 0.6)], latency_arr[(uint64_t) (num_iterations * 0.7)], latency_arr[(uint64_t) (num_iterations * 0.8)], latency_arr[(uint64_t) (num_iterations * 0.9)], latency_arr[num_iterations - 1]);
+		printf("p0: %Lf us, p10: %Lf us, p20: %Lf us, p30: %Lf us, p40: %Lf us, p50: %Lf us, "
+		       "p60: %Lf us, p70: %Lf us, p80: %Lf us, p90: %Lf us, p100: %Lf us\n",
+		       latency_arr[0] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.1)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.2)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.3)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.4)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.5)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.6)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.7)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.8)] / BASE_TSC / 1000,
+		       latency_arr[(uint64_t) (num_iterations * 0.9)] / BASE_TSC / 1000,
+		       latency_arr[num_iterations - 1] / BASE_TSC / 1000);
 	} else {
 		int target_rank = 0;
 

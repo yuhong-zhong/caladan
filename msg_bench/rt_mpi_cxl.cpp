@@ -625,7 +625,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 				uint64_t iteration = overflow_queue.front();
 				overflow_queue.pop_front();
 				
-				bool sent = msg_send(group_chan_out, MSG_CMD_SEND, iteration);
+				bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, iteration);
 				if (!sent)
 					overflow_queue.push_back(iteration);
 			}
@@ -642,7 +642,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 			bool received = lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload);
 			if (received) {
 				thread_available[cur_thread] = true;
-				bool sent = msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
+				bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
 				if (!sent)
 					overflow_queue.push_back(thread_to_iter[cur_thread]);
 				break;
@@ -663,9 +663,17 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
 
-		bool sent = msg_send(group_chan_out, MSG_CMD_SEND, iteration);
+		bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, iteration);
 		if (!sent)
 			overflow_queue.push_back(iteration);
+	}
+
+	for (int i = 0; i < thread_count; ++i) {
+		bool sent = lrpc_send(&lrpc_chan_outs[i], LRPC_CMD_STOP, 0);
+		BUG_ON(!sent);
+	}
+	for (int i = 0; i < thread_count; ++i) {
+		threads[i].join();
 	}
 }
 
@@ -707,7 +715,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 	while (received_iter < num_iterations) {
 		uint64_t cmd;
 		unsigned long payload;
-		while (!msg_recv(group_chan_in, &cmd, &payload)) {
+		while (!huge_msg_recv(group_chan_in, &cmd, &payload)) {
 			pause();
 		}
 		BUG_ON(cmd != MSG_CMD_SEND);
@@ -724,7 +732,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 				read_per_iter[thread_to_iter[cur_thread]] += block_size;
 
 				if (my_rank != 0) {
-					bool sent = msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
+					bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
 					if (!sent)
 						overflow_queue.push_back(thread_to_iter[cur_thread]);
 				}
@@ -765,7 +773,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		read_per_iter[thread_to_iter[cur_thread]] += block_size;
 
 		if (my_rank != 0) {
-			bool sent = msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
+			bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
 			if (!sent)
 				overflow_queue.push_back(thread_to_iter[cur_thread]);
 		}
@@ -781,9 +789,17 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
 
-		bool sent = msg_send(group_chan_out, MSG_CMD_SEND, iteration);
+		bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, iteration);
 		if (!sent)
 			overflow_queue.push_back(iteration);
+	}
+
+	for (int i = 0; i < thread_count; ++i) {
+		bool sent = lrpc_send(&lrpc_chan_outs[i], LRPC_CMD_STOP, 0);
+		BUG_ON(!sent);
+	}
+	for (int i = 0; i < thread_count; ++i) {
+		threads[i].join();
 	}
 }
 

@@ -659,6 +659,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 		buf_index = (buf_index + 1) % num_blocks;
 		cur_thread = (cur_thread + 1) % thread_count;
 	}
+	printf("rank %d send coordinator finished sending\n", my_rank);
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
@@ -667,6 +668,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 		if (!sent)
 			overflow_queue.push_back(iteration);
 	}
+	printf("rank %d send coordinator finished sending overflow\n", my_rank);
 
 	for (int i = 0; i < thread_count; ++i) {
 		bool sent = lrpc_send(&lrpc_chan_outs[i], LRPC_CMD_STOP, 0);
@@ -675,6 +677,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 	for (int i = 0; i < thread_count; ++i) {
 		threads[i].join();
 	}
+	printf("rank %d send coordinator finished joining threads\n", my_rank);
 }
 
 void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, struct msg_chan_out *group_chan_out) {
@@ -756,10 +759,12 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		buf_index = (buf_index + 1) % num_blocks;
 
 		received_per_iter[iteration] += block_size;
+		printf("rank %d received iteration %lu, received_per_iter[iteration]: %lu\n", my_rank, iteration, received_per_iter[iteration]);
 		if (received_per_iter[iteration] == data_size) {
 			received_iter++;
 		}
 	}
+	printf("rank %d recv coordinator finished receiving\n", my_rank);
 	for (cur_thread = 0; cur_thread < thread_count; ++cur_thread) {
 		if (thread_available[cur_thread])
 			continue;
@@ -785,6 +790,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 				end_tsc_arr[thread_to_iter[cur_thread]] = __rdtsc();
 		}
 	}
+	printf("rank %d recv coordinator finished receiving overflow\n", my_rank);
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
@@ -793,7 +799,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		if (!sent)
 			overflow_queue.push_back(iteration);
 	}
-
+	printf("rank %d recv coordinator finished sending overflow\n", my_rank);
 	for (int i = 0; i < thread_count; ++i) {
 		bool sent = lrpc_send(&lrpc_chan_outs[i], LRPC_CMD_STOP, 0);
 		BUG_ON(!sent);
@@ -801,6 +807,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 	for (int i = 0; i < thread_count; ++i) {
 		threads[i].join();
 	}
+	printf("rank %d recv coordinator finished joining threads\n", my_rank);
 }
 
 int main(int argc, char *argv[]) {

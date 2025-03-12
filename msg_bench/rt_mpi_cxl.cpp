@@ -772,6 +772,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 
 		received_per_iter[iteration] += block_size;
 		if (received_per_iter[iteration] == data_size) {
+			// printf("received iteration %lu\n", iteration);
 			received_iter++;
 		}
 	}
@@ -800,6 +801,8 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 				end_tsc_arr[thread_to_iter[cur_thread]] = __rdtsc();
 		}
 	}
+	BUG_ON(read_iter != num_iterations);
+	BUG_ON(received_iter != num_iterations);
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
@@ -902,9 +905,10 @@ int main(int argc, char *argv[]) {
 		thread receiver_thread(recv_coordinator_fn, &group_chan_ins[target_rank], target_rank, (struct msg_chan_out *) NULL);
 		sleep(5);
 
+		uint64_t issue_start = __rdtsc();
 		for (uint64_t i = 0; i < num_iterations; ++i) {
 			uint64_t now = __rdtsc();
-			while (now < start + delay_tsc * i) {
+			while (now < issue_start + delay_tsc * i) {
 				pause();
 				now = __rdtsc();
 			}
@@ -925,8 +929,8 @@ int main(int argc, char *argv[]) {
 			latency_arr[i] = end_tsc_arr[i] - start_tsc_arr[i];
 		}
 		std::sort(latency_arr, latency_arr + num_iterations);
-		printf("p0: %Lf us, p10: %Lf us, p20: %Lf us, p30: %Lf us, p40: %Lf us, p50: %Lf us, "
-		       "p60: %Lf us, p70: %Lf us, p80: %Lf us, p90: %Lf us, p100: %Lf us\n",
+		printf("p0: %.2Lf us, p10: %.2Lf us, p20: %.2Lf us, p30: %.2Lf us, p40: %.2Lf us, p50: %.2Lf us, "
+		       "p60: %.2Lf us, p70: %.2Lf us, p80: %.2Lf us, p90: %.2Lf us, p100: %.2Lf us\n",
 		       latency_arr[0] / BASE_TSC / 1000,
 		       latency_arr[(uint64_t) (num_iterations * 0.1)] / BASE_TSC / 1000,
 		       latency_arr[(uint64_t) (num_iterations * 0.2)] / BASE_TSC / 1000,

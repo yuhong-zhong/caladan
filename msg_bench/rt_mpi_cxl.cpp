@@ -731,7 +731,28 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		uint64_t cmd;
 		unsigned long payload;
 		while (!huge_msg_recv(group_chan_in, &cmd, &payload)) {
-			pause();
+			for (int tid = 0; tid < thread_count; ++tid) {
+				if (thread_available[tid])
+					continue;
+				uint64_t cmd;
+				unsigned long payload;
+				bool received = lrpc_recv(&lrpc_chan_ins[tid], &cmd, &payload);
+				if (received) {
+					BUG_ON(cmd != LRPC_CMD_DONE);
+					thread_available[tid] = true;
+					read_per_iter[thread_to_iter[tid]] += block_size;
+					if (my_rank != 0) {
+						bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[tid]);
+						if (!sent)
+							overflow_queue.push_back(thread_to_iter[tid]);
+					}
+					if (read_per_iter[thread_to_iter[tid]] == data_size) {
+						read_iter++;
+						if (my_rank == 0)
+							end_tsc_arr[thread_to_iter[tid]] = __rdtsc();
+					}
+				}
+			}
 		}
 		BUG_ON(cmd != MSG_CMD_SEND);
 

@@ -36,7 +36,7 @@ using namespace std::chrono;
 
 #define CHAN_SIZE (8192ul)
 
-#define CXL_MEM_SIZE (1ul << 30ul)
+#define CXL_MEM_SIZE (64ul << 30ul)
 #define CXL_DAX "/dev/dax0.0"
 
 #define BASE_TSC (2.2l)

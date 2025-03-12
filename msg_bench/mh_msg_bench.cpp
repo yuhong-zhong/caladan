@@ -383,6 +383,9 @@ void run_on_core(uint64_t core) {
 
 #define LAT_SAMPLE_RATE (1000ul)
 
+#define NR_BLOCKS (16384ul)
+#define BLOCK_SIZE (1ul << 20ul)
+
 void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 	uint8_t *cxl_buf_start = cxl_buf;
 	batch_clflushopt(cxl_buf, CXL_MEM_SIZE);
@@ -404,12 +407,17 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 	uint32_t *reverse_recv_head_wb = (uint32_t *) cxl_buf;
 	cxl_buf += HUGE_PAGE_SIZE;
 	msg_init_out(&reverse_chan, (struct lrpc_msg *) cxl_buf, CHAN_SIZE, reverse_recv_head_wb);
+	cxl_buf += ROUND_UP(CHAN_SIZE * sizeof(struct lrpc_msg), CACHE_LINE_SIZE);
 
 	const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
 	// uint64_t *latency_buf = (uint64_t *) aligned_alloc(PAGE_SIZE, num_samples * sizeof(uint64_t));
 	// BUG_ON(latency_buf == NULL);
 	// memset(latency_buf, 0, num_samples * sizeof(uint64_t));
 	// uint64_t lat_index = 0;
+
+	uint8_t *local_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, BLOCK_SIZE);
+	BUG_ON(local_buf == NULL);
+	memset(local_buf, 0, BLOCK_SIZE);
 
 	uint64_t cmd;
 	unsigned long payload;
@@ -425,6 +433,14 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 			pause();
 		}
 		BUG_ON(cmd != i);
+
+		uint64_t block_index = i % NR_BLOCKS;
+		batch_clflushopt(cxl_buf + block_index * BLOCK_SIZE, BLOCK_SIZE);
+		memcpy(local_buf, cxl_buf + block_index * BLOCK_SIZE, BLOCK_SIZE);
+
+		block_index = (i % NR_BLOCKS) + NR_BLOCKS;
+		memcpy(cxl_buf + block_index * BLOCK_SIZE, local_buf, BLOCK_SIZE);
+		batch_clflushopt(cxl_buf + block_index * BLOCK_SIZE, BLOCK_SIZE);
 
 		if (i % LAT_SAMPLE_RATE == LAT_SAMPLE_RATE - 1) {
 			// uint64_t now = __rdtsc();
@@ -450,7 +466,7 @@ void consumer_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations) {
 	batch_clflushopt(cxl_buf_start, CXL_MEM_SIZE);
 }
 
-void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_iterations) {
+void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_iterations, uint8_t *cxl_buf) {
 	const uint64_t num_samples = num_iterations / LAT_SAMPLE_RATE;
 
 	uint64_t cmd;
@@ -459,6 +475,10 @@ void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_ite
 	BUG_ON(latency_buf == NULL);
 	memset(latency_buf, 0, num_samples * sizeof(uint64_t));
 
+	uint8_t *local_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, BLOCK_SIZE);
+	BUG_ON(local_buf == NULL);
+	memset(local_buf, 0, BLOCK_SIZE);
+
 	for (uint64_t i = 0; i < num_samples; i++) {
 		// while (!msg_recv(reverse_chan, &cmd, &payload)) {
 		// 	pause();
@@ -466,6 +486,11 @@ void sender_reverse_thread_fn(struct msg_chan_in *reverse_chan, uint64_t num_ite
 		while (!huge_msg_recv(reverse_chan, &cmd, &payload)) {
 			pause();
 		}
+
+		uint64_t block_index = (i % NR_BLOCKS) + NR_BLOCKS;
+		batch_clflushopt(cxl_buf + block_index * BLOCK_SIZE, BLOCK_SIZE);
+		memcpy(local_buf, cxl_buf + block_index * BLOCK_SIZE, BLOCK_SIZE);
+
 		uint64_t now = __rdtsc();
 		latency_buf[i] = now - payload;
 	}
@@ -512,8 +537,14 @@ void sender_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations, uint64_t delay_
 	cxl_buf += HUGE_PAGE_SIZE;
 	msg_init_in(&reverse_chan, (struct lrpc_msg *) cxl_buf, CHAN_SIZE, reverse_recv_head_wb);
 	reverse_chan.prefetch_len = 16;
+	cxl_buf += ROUND_UP(CHAN_SIZE * sizeof(struct lrpc_msg), CACHE_LINE_SIZE);
 
-	thread reverse_thread(sender_reverse_thread_fn, &reverse_chan, num_iterations);
+	uint8_t *local_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, BLOCK_SIZE);
+	BUG_ON(local_buf == NULL);
+	memset(local_buf, 0, BLOCK_SIZE);
+
+	thread reverse_thread(sender_reverse_thread_fn, &reverse_chan, num_iterations, cxl_buf);
+	sleep(1);
 
 	// wait for receiver to start
 	while (*receiver_signal == 0)
@@ -529,6 +560,11 @@ void sender_thread_fn(uint8_t *cxl_buf, uint64_t num_iterations, uint64_t delay_
 		// while (!msg_send(&chan_out, i, now)) {
 		// 	pause();
 		// }
+
+		uint64_t block_index = i % NR_BLOCKS;
+		memcpy(cxl_buf + block_index * BLOCK_SIZE, local_buf, BLOCK_SIZE);
+		batch_clflushopt(cxl_buf + block_index * BLOCK_SIZE, BLOCK_SIZE);
+
 		while (!huge_msg_send(&chan_out, i, now)) {
 			pause();
 		}

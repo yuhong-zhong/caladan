@@ -824,6 +824,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 	}
 	BUG_ON(read_iter != num_iterations);
 	BUG_ON(received_iter != num_iterations);
+	printf("overflow queue size: %lu\n", overflow_queue.size());
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();

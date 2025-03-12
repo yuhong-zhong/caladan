@@ -492,8 +492,9 @@ enum main_lrpc_command {
 enum lrpc_command {
 	LRPC_CMD_READ = 0,
 	LRPC_CMD_WRITE = 1,
-	LRPC_CMD_DONE = 2,
-	LRPC_CMD_STOP = 3,
+	LRPC_CMD_READ_WRITE = 2,
+	LRPC_CMD_DONE = 3,
+	LRPC_CMD_STOP = 4,
 };
 
 int group_size;
@@ -538,6 +539,16 @@ void send_recv_thread_fn(uint8_t *lrpc_in_buf, uint8_t *lrpc_out_buf) {
 			BUG_ON(!sent);
 			break;
 		case LRPC_CMD_WRITE:
+			memcpy(addr, local_buf, block_size);
+			batch_clflushopt(addr, block_size);
+
+			sent = lrpc_send(&chan_out, LRPC_CMD_DONE, payload);
+			BUG_ON(!sent);
+			break;
+		case LRPC_CMD_READ_WRITE:
+			batch_clflushopt(addr, block_size);
+			memcpy(local_buf, addr, block_size);
+
 			memcpy(addr, local_buf, block_size);
 			batch_clflushopt(addr, block_size);
 
@@ -698,7 +709,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 	}
 }
 
-void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, struct msg_chan_out *group_chan_out) {
+void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, struct msg_chan_out *group_chan_out, int lrpc_cmd) {
 	vector<struct lrpc_chan_out> lrpc_chan_outs(thread_count);
 	vector<struct lrpc_chan_in> lrpc_chan_ins(thread_count);
 	uint8_t *lrpc_out_buf = (uint8_t *) aligned_alloc(PAGE_SIZE, thread_count * HUGE_PAGE_SIZE * 2);
@@ -790,7 +801,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 		}
 		BUG_ON(!thread_available[cur_thread]);
 
-		bool sent = lrpc_send(&lrpc_chan_outs[cur_thread], LRPC_CMD_READ, (unsigned long) buf_areas[source_rank] + buf_index * block_size);
+		bool sent = lrpc_send(&lrpc_chan_outs[cur_thread], lrpc_cmd, (unsigned long) buf_areas[source_rank] + buf_index * block_size);
 		BUG_ON(!sent);
 		thread_available[cur_thread] = false;
 		thread_to_iter[cur_thread] = iteration;
@@ -928,7 +939,7 @@ int main(int argc, char *argv[]) {
 		memset(&receiver_chan_in, 0, sizeof(struct lrpc_chan_in));
 		lrpc_init_in(&receiver_chan_in, (struct lrpc_msg *) receiver_lrpc_buf, CHAN_SIZE, (uint32_t *) (receiver_lrpc_buf + HUGE_PAGE_SIZE));
 
-		thread receiver_thread(recv_coordinator_fn, &group_chan_ins[target_rank], target_rank, (struct msg_chan_out *) NULL);
+		thread receiver_thread(recv_coordinator_fn, &group_chan_ins[target_rank], target_rank, (struct msg_chan_out *) NULL, LRPC_CMD_READ);
 		sleep(5);
 
 		uint64_t issue_start = __rdtsc();
@@ -976,7 +987,7 @@ int main(int argc, char *argv[]) {
 		memset(&receiver_chan_in, 0, sizeof(struct lrpc_chan_in));
 		lrpc_init_in(&receiver_chan_in, (struct lrpc_msg *) receiver_lrpc_buf, CHAN_SIZE, (uint32_t *) (receiver_lrpc_buf + HUGE_PAGE_SIZE));
 
-		thread receiver_thread(recv_coordinator_fn, &group_chan_ins[target_rank], target_rank, &group_chan_outs[target_rank]);
+		thread receiver_thread(recv_coordinator_fn, &group_chan_ins[target_rank], target_rank, &group_chan_outs[target_rank], LRPC_CMD_READ_WRITE);
 
 		receiver_thread.join();
 	}

@@ -620,14 +620,19 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 		}
 
 		if (write_queue.empty()) {
-			uint64_t overflow_size = overflow_queue.size();
-			for (uint64_t i = 0; i < overflow_size; ++i) {
-				uint64_t iteration = overflow_queue.front();
-				overflow_queue.pop_front();
-				
-				bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, iteration);
-				if (!sent)
-					overflow_queue.push_back(iteration);
+			for (int tid = 0; tid < thread_count; ++tid) {
+				if (thread_available[tid])
+					continue;
+				uint64_t cmd;
+				unsigned long payload;
+				bool received = lrpc_recv(&lrpc_chan_ins[tid], &cmd, &payload);
+				if (received) {
+					BUG_ON(cmd != LRPC_CMD_DONE);
+					thread_available[tid] = true;
+					bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[tid]);
+					if (!sent)
+						overflow_queue.push_back(thread_to_iter[tid]);
+				}
 			}
 			continue;
 		}
@@ -674,6 +679,7 @@ void send_coordinator_fn(uint8_t *main_lrpc_buf_in, uint8_t *main_lrpc_buf_out, 
 		if (!sent)
 			overflow_queue.push_back(thread_to_iter[cur_thread]);
 	}
+	printf("send coordinator overflow queue size: %lu\n", overflow_queue.size());
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();
@@ -822,7 +828,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 	}
 	BUG_ON(read_iter != num_iterations);
 	BUG_ON(received_iter != num_iterations);
-	printf("overflow queue size: %lu\n", overflow_queue.size());
+	printf("receive coordinator overflow queue size: %lu\n", overflow_queue.size());
 	while (!overflow_queue.empty()) {
 		uint64_t iteration = overflow_queue.front();
 		overflow_queue.pop_front();

@@ -730,7 +730,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 	while (received_iter < num_iterations) {
 		uint64_t cmd;
 		unsigned long payload;
-		while (!huge_msg_recv(group_chan_in, &cmd, &payload)) {
+		do {
 			for (int tid = 0; tid < thread_count; ++tid) {
 				if (thread_available[tid])
 					continue;
@@ -753,7 +753,7 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 					}
 				}
 			}
-		}
+		} while (!huge_msg_recv(group_chan_in, &cmd, &payload));
 		BUG_ON(cmd != MSG_CMD_SEND);
 
 		uint64_t iteration = payload;
@@ -774,7 +774,6 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 				}
 
 				if (read_per_iter[thread_to_iter[cur_thread]] == data_size) {
-					// TODO: trigger send
 					read_iter++;
 					if (my_rank == 0)
 						end_tsc_arr[thread_to_iter[cur_thread]] = __rdtsc();
@@ -797,30 +796,36 @@ void recv_coordinator_fn(struct msg_chan_in *group_chan_in, int source_rank, str
 			received_iter++;
 		}
 	}
-	for (cur_thread = 0; cur_thread < thread_count; ++cur_thread) {
-		if (thread_available[cur_thread])
-			continue;
+	while (true) {
+		bool done = true;
+		for (cur_thread = 0; cur_thread < thread_count; ++cur_thread) {
+			if (thread_available[cur_thread])
+				continue;
 
-		uint64_t cmd;
-		unsigned long payload;
-		while (!lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload)) {
-			pause();
-		}
-		BUG_ON(cmd != LRPC_CMD_DONE);
-		read_per_iter[thread_to_iter[cur_thread]] += block_size;
+			uint64_t cmd;
+			unsigned long payload;
+			bool received = lrpc_recv(&lrpc_chan_ins[cur_thread], &cmd, &payload);
+			if (!received) {
+				done = false;
+				continue;
+			}
+			BUG_ON(cmd != LRPC_CMD_DONE);
+			read_per_iter[thread_to_iter[cur_thread]] += block_size;
 
-		if (my_rank != 0) {
-			bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
-			if (!sent)
-				overflow_queue.push_back(thread_to_iter[cur_thread]);
-		}
+			if (my_rank != 0) {
+				bool sent = huge_msg_send(group_chan_out, MSG_CMD_SEND, thread_to_iter[cur_thread]);
+				if (!sent)
+					overflow_queue.push_back(thread_to_iter[cur_thread]);
+			}
 
-		if (read_per_iter[thread_to_iter[cur_thread]] == data_size) {
-			// TODO: trigger send
-			read_iter++;
-			if (my_rank == 0)
-				end_tsc_arr[thread_to_iter[cur_thread]] = __rdtsc();
+			if (read_per_iter[thread_to_iter[cur_thread]] == data_size) {
+				read_iter++;
+				if (my_rank == 0)
+					end_tsc_arr[thread_to_iter[cur_thread]] = __rdtsc();
+			}
 		}
+		if (done)
+			break;
 	}
 	BUG_ON(read_iter != num_iterations);
 	BUG_ON(received_iter != num_iterations);

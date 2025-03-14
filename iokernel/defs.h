@@ -37,6 +37,7 @@ struct iokernel_cfg {
 	int	socket_index;
 	bool	is_secondary;
 	int	seciok_index;
+	int	pmyiok_index;
 };
 
 extern struct iokernel_cfg cfg;
@@ -230,6 +231,9 @@ struct proc {
 	pid_t			pid;
 
 	int			seciok_index;
+
+	volatile int		cur_pmyiok_index;
+	volatile int		next_pmyiok_index;
 
 	/* table of physical addresses for shared memory */
 	physaddr_t		page_paddrs[];

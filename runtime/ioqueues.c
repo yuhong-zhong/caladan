@@ -36,6 +36,7 @@
 
 const char *rt_cxl_path = NULL;
 int iok_socket_index = 0;
+int pmyiok_index = 0;
 
 static size_t lrpc_q_size(void)
 {
@@ -230,6 +231,13 @@ int ioqueues_init_early(void)
 	if (connect(iok.fd, (struct sockaddr *)&addr,
 		    sizeof(addr.sun_family) + strlen(addr.sun_path + 1) + 2) == -1) {
 		log_err("ioqueues_init_early: connect() failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	ret = write(iok.fd, &pmyiok_index, sizeof(pmyiok_index));
+	if (ret != sizeof(pmyiok_index)) {
+		log_err("ioqueues_init_early: write(pmyiok_index) failed, len=%ld [%s]",
+			ret, strerror(errno));
 		RT_BUG_ON(true);
 	}
 

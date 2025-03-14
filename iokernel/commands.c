@@ -10,7 +10,7 @@
 
 #include "defs.h"
 
-static int commands_drain_queue(struct thread *t, unsigned long *bufs, int n)
+static int commands_drain_queue(struct thread *t, unsigned long *bufs, int *proc_pmyiok_indices, int n)
 {
 	int i, n_bufs = 0;
 
@@ -23,7 +23,9 @@ static int commands_drain_queue(struct thread *t, unsigned long *bufs, int n)
 
 		switch (cmd) {
 		case TXCMD_NET_COMPLETE:
-			bufs[n_bufs++] = payload;
+			bufs[n_bufs] = payload;
+			proc_pmyiok_indices[n_bufs] = t->p->cur_pmyiok_index;
+			n_bufs++;
 			/* TODO: validate pointer @buf */
 			break;
 
@@ -58,12 +60,14 @@ static int commands_drain_queue_from_seciok(struct msg_chan_in *chan, unsigned l
 	return n_bufs;
 }
 
-static void commands_send_to_pmyiok(struct msg_chan_out *chan, unsigned long *bufs, int n)
+static void commands_send_to_pmyiok(unsigned long *bufs, int *proc_pmyiok_indices, int n)
 {
 	int i;
 	bool success;
+	struct msg_chan_out *chan;
 
 	for (i = 0; i < n; i++) {
+		chan = &iok_as_secondary_txcmdq[proc_pmyiok_indices[i]][cfg.seciok_index];
 		log_debug_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0), bufs[i]));
 		if (!success) {
 			log_err_ratelimited("commands_send_to_pmyiok: failed to send to primary iokernel");
@@ -77,6 +81,7 @@ static void commands_send_to_pmyiok(struct msg_chan_out *chan, unsigned long *bu
 bool commands_rx(void)
 {
 	unsigned long bufs[IOKERNEL_CMD_BURST_SIZE];
+	int proc_pmyiok_indices[IOKERNEL_CMD_BURST_SIZE];
 	int i, n_bufs = 0;
 	static unsigned int pos = 0;
 
@@ -89,14 +94,14 @@ bool commands_rx(void)
 
 		if (n_bufs >= IOKERNEL_CMD_BURST_SIZE)
 			break;
-		n_bufs += commands_drain_queue(ts[idx], &bufs[n_bufs],
+		n_bufs += commands_drain_queue(ts[idx], &bufs[n_bufs], &proc_pmyiok_indices[n_bufs],
 				IOKERNEL_CMD_BURST_SIZE - n_bufs);
 	}
 	if (!cfg.is_secondary) {
 		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
 			if (n_bufs >= IOKERNEL_CMD_BURST_SIZE)
 				break;
-			n_bufs += commands_drain_queue_from_seciok(&iok_as_primary_txcmdq[i],
+			n_bufs += commands_drain_queue_from_seciok(&iok_as_primary_txcmdq[cfg.pmyiok_index][i],
 					&bufs[n_bufs], IOKERNEL_CMD_BURST_SIZE - n_bufs);
 		}
 	}
@@ -105,8 +110,10 @@ bool commands_rx(void)
 
 	pos++;
 	if (cfg.is_secondary) {
-		commands_send_to_pmyiok(&iok_as_secondary_txcmdq[cfg.seciok_index], bufs, n_bufs);
-		msg_out_sync(&iok_as_secondary_txcmdq[cfg.seciok_index]);
+		commands_send_to_pmyiok(bufs, proc_pmyiok_indices, n_bufs);
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			msg_out_sync(&iok_as_secondary_txcmdq[i][cfg.seciok_index]);
+		}
 	} else {
 		for (i = 0; i < n_bufs; i++)
 			rte_pktmbuf_free(shmptr_to_ptr(&dp.ingress_mbuf_region, bufs[i], sizeof(struct rte_mbuf)));

@@ -30,7 +30,7 @@ static int completion_enqueue(struct rte_mempool *mp, void * const *obj_table,
 		tx_send_completion(obj_table[i]);
 
 	for (j = 0; j < MAX_NR_IOK2IOK; ++j) {
-		msg_out_sync(&iok_as_primary_rxcmdq[j]);
+		msg_out_sync(&iok_as_primary_rxcmdq[cfg.pmyiok_index][j]);
 	}
 
 #if defined(__clang__)

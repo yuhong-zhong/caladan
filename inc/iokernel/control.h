@@ -39,28 +39,28 @@ enum {
 #define IOK2IOK_CMD_SHM_SIZE	(ROUND_UP(IOK2IOK_CMD_QUEUE_SIZE * sizeof(struct lrpc_msg), PGSIZE_2MB))
 #define IOK2IOK_TOTAL_SHM_SIZE	(4UL * IOK2IOK_DP_SHM_SIZE + 2UL * IOK2IOK_CMD_SHM_SIZE)
 
-#define MAX_NR_IOK2IOK		1UL
+#define MAX_NR_IOK2IOK		2UL
 
-// All iok2iok QP head pointers must fit in a 2MB page
+// The iok2iok QP head pointers of a pmyiok must fit in a 2MB page
 BUILD_ASSERT(MAX_NR_IOK2IOK * 6 * CACHE_LINE_SIZE <= PGSIZE_2MB);
 
 /* primary iokernel */
-extern struct msg_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK];
-extern struct msg_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK];
-extern struct msg_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK];
-extern struct msg_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
-extern struct msg_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK];
-extern struct msg_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
 /* secondary iokernel */
-extern struct msg_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK];
-extern struct msg_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK];
-extern struct msg_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK];
-extern struct msg_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
-extern struct msg_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK];
-extern struct msg_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
 enum {
 	IOK2IOK_CMD_ADD_CLIENT = 0,

@@ -114,7 +114,7 @@ static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned lon
 
 	if (p->is_remote) {
 		RT_BUG_ON(cfg.is_secondary);
-		chan = &iok_as_primary_rxcmdq[p->seciok_index];
+		chan = &iok_as_primary_rxcmdq[cfg.pmyiok_index][p->seciok_index];
 
 		log_debug_duration(succeeded = msg_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->iok2iok_index), completion_data));
 		if (unlikely(!succeeded)) {
@@ -187,7 +187,7 @@ static int drain_overflow_queue(struct proc *p, int n)
 	return i;
 }
 
-static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n)
+static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_index)
 {
 	uint64_t cmd, raw_cmd;
 	uint16_t iok2iok_proc_index;
@@ -207,7 +207,7 @@ static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n)
 		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
 		RT_BUG_ON(raw_cmd != RX_NET_COMPLETE);
 
-		p = iok2iok_proc_as_seciok[cfg.seciok_index][iok2iok_proc_index];
+		p = iok2iok_proc_as_seciok[pmyiok_index][iok2iok_proc_index];
 		RT_BUG_ON(!p);
 
 		// TODO: a hack based on the knowledge that completion_data is hdr
@@ -233,7 +233,7 @@ bool tx_drain_completions(void)
 			if (drained_pmyiok >= IOKERNEL_TX_BURST_SIZE)
 				break;
 			drained_pmyiok += tx_drain_completions_from_pmyiok(
-				&iok_as_secondary_rxcmdq[i], IOKERNEL_TX_BURST_SIZE - drained_pmyiok
+				&iok_as_secondary_rxcmdq[i][cfg.seciok_index], IOKERNEL_TX_BURST_SIZE - drained_pmyiok, i
 			);
 		}
 	}
@@ -323,14 +323,14 @@ static int tx_drain_queue_from_seciok(struct msg_chan_in *chan, int n,
 	return i;
 }
 
-static void txpkt_send_to_pmyiok(struct msg_chan_out *chan,
-				 struct tx_net_hdr **hdrs, struct thread **threads, int n)
+static void txpkt_send_to_pmyiok(struct tx_net_hdr **hdrs, struct thread **threads, int *proc_pmyiok_indices, int n)
 {
 	int i;
 	shmptr_t shmptr;
 	uint16_t iok2iok_proc_index;
 	struct proc *p;
 	bool success;
+	struct msg_chan_out *chan;
 
 	for (i = 0; i < n; i++) {
 		if (i + TX_PREFETCH_STRIDE < n)
@@ -341,6 +341,8 @@ static void txpkt_send_to_pmyiok(struct msg_chan_out *chan,
 
 		hdrs[i]->private_seciok = (unsigned long) threads[i];
 		proc_get(p);
+
+		chan = &iok_as_secondary_txpktq[proc_pmyiok_indices[i]][cfg.seciok_index];
 
 		shmptr = ptr_to_shmptr(&p->region, (void *) hdrs[i], sizeof(*hdrs[i]));
 		log_debug_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), iok2iok_proc_index), shmptr));
@@ -359,6 +361,7 @@ bool tx_burst(void)
 	struct tx_net_hdr *hdrs[IOKERNEL_TX_BURST_SIZE];
 	unsigned short lens[IOKERNEL_TX_BURST_SIZE];
 	unsigned short olflags[IOKERNEL_TX_BURST_SIZE];
+	int proc_pmyiok_indices[IOKERNEL_TX_BURST_SIZE];
 	static struct rte_mbuf *bufs[IOKERNEL_TX_BURST_SIZE];
 	struct thread *threads[IOKERNEL_TX_BURST_SIZE];
 	struct proc *procs[IOKERNEL_TX_BURST_SIZE];
@@ -382,6 +385,8 @@ bool tx_burst(void)
 			if (!cfg.is_secondary) {
 				lens[j] = hdrs[j]->len;
 				olflags[j] = hdrs[j]->olflags;
+			} else {
+				proc_pmyiok_indices[j] = t->p->cur_pmyiok_index;
 			}
 		}
 		n_pkts += ret;
@@ -394,7 +399,7 @@ bool tx_burst(void)
 		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
 			if (n_pkts >= IOKERNEL_TX_BURST_SIZE)
 				break;
-			ret = tx_drain_queue_from_seciok(&iok_as_primary_txpktq[i], IOKERNEL_TX_BURST_SIZE - n_pkts,
+			ret = tx_drain_queue_from_seciok(&iok_as_primary_txpktq[cfg.pmyiok_index][i], IOKERNEL_TX_BURST_SIZE - n_pkts,
 							 &hdrs[n_pkts], &lens[n_pkts], &olflags[n_pkts], &procs[n_pkts]);
 			n_pkts += ret;
 			pulltotal += ret;
@@ -411,9 +416,10 @@ full:
 	stats[TX_PULLED] += pulltotal;
 
 	if (cfg.is_secondary) {
-		txpkt_send_to_pmyiok(&iok_as_secondary_txpktq[cfg.seciok_index],
-				     hdrs, threads, n_pkts);
-		msg_out_sync(&iok_as_secondary_txpktq[cfg.seciok_index]);
+		txpkt_send_to_pmyiok(hdrs, threads, proc_pmyiok_indices, n_pkts);
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			msg_out_sync(&iok_as_secondary_txpktq[i][cfg.seciok_index]);
+		}
 		n_pkts = 0;
 		return true;
 	}

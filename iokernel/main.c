@@ -145,24 +145,26 @@ void dataplane_loop(void)
 		work_done = false;
 
 		if (cfg.is_secondary) {
-			msg_in_sync(&iok_as_secondary_rxq[cfg.seciok_index]);
-			msg_in_sync(&iok_as_secondary_rxcmdq[cfg.seciok_index]);
+			for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+				msg_in_sync(&iok_as_secondary_rxq[i][cfg.seciok_index]);
+				msg_in_sync(&iok_as_secondary_rxcmdq[i][cfg.seciok_index]);
 
-			// msg_out_sync(&iok_as_secondary_txpktq[cfg.seciok_index]);
-			// msg_out_sync(&iok_as_secondary_txcmdq[cfg.seciok_index]);
+				// msg_out_sync(&iok_as_secondary_txpktq[i][cfg.seciok_index]);
+				// msg_out_sync(&iok_as_secondary_txcmdq[i][cfg.seciok_index]);
 
-			msg_out_sync(&iok_as_secondary_cmdq_out[cfg.seciok_index]);
-			msg_in_sync(&iok_as_secondary_cmdq_in[cfg.seciok_index]);
+				msg_out_sync(&iok_as_secondary_cmdq_out[i][cfg.seciok_index]);
+				msg_in_sync(&iok_as_secondary_cmdq_in[i][cfg.seciok_index]);
+			}
 		} else {
 			for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
-				// msg_out_sync(&iok_as_primary_rxq[i]);
-				// msg_out_sync(&iok_as_primary_rxcmdq[i]);
+				// msg_out_sync(&iok_as_primary_rxq[cfg.pmyiok_index][i]);
+				// msg_out_sync(&iok_as_primary_rxcmdq[cfg.pmyiok_index][i]);
 
-				msg_in_sync(&iok_as_primary_txpktq[i]);
-				msg_in_sync(&iok_as_primary_txcmdq[i]);
+				msg_in_sync(&iok_as_primary_txpktq[cfg.pmyiok_index][i]);
+				msg_in_sync(&iok_as_primary_txcmdq[cfg.pmyiok_index][i]);
 
-				msg_in_sync(&iok_as_primary_cmdq_in[i]);
-				msg_out_sync(&iok_as_primary_cmdq_out[i]);
+				msg_in_sync(&iok_as_primary_cmdq_in[cfg.pmyiok_index][i]);
+				msg_out_sync(&iok_as_primary_cmdq_out[cfg.pmyiok_index][i]);
 			}
 		}
 
@@ -305,6 +307,9 @@ int main(int argc, char *argv[])
 		} else if (!strcmp(argv[i], "seciok_index")) {
 			cfg.seciok_index = atoi(argv[++i]);
 			RT_BUG_ON(cfg.seciok_index < 0);
+		} else if (!strcmp(argv[i], "pmyiok_index")) {
+			cfg.pmyiok_index = atoi(argv[++i]);
+			RT_BUG_ON(cfg.pmyiok_index < 0);
 		} else if (!strcmp(argv[i], "noidlefastwake")) {
 			cfg.noidlefastwake = true;
 		} else if (!strcmp(argv[i], "dpactiverss")) {

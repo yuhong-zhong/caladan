@@ -82,7 +82,7 @@ void parse_mbuf(struct rte_mbuf *buf, uint32_t *len, uint32_t *off, uint32_t *cs
 
 static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 {
-	struct msg_chan_out *chan = &iok_as_primary_rxq[p->seciok_index];
+	struct msg_chan_out *chan = &iok_as_primary_rxq[cfg.pmyiok_index][p->seciok_index];
 	uint32_t len, off, csum_type, rss_hash, rawcmd;
 	void *packet;
 	shmptr_t shmptr;
@@ -286,7 +286,7 @@ fail_free:
 	STAT_INC(RX_UNHANDLED, 1);
 }
 
-static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
+static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_index)
 {
 	int i;
 	uint64_t cmd, completion_data;
@@ -304,7 +304,7 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
 
 		rawcmd = IOK2IOK_GET_RAWCMD(cmd);
 		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
-		p = iok2iok_proc_as_seciok[cfg.seciok_index][iok2iok_proc_index];
+		p = iok2iok_proc_as_seciok[pmyiok_index][iok2iok_proc_index];
 
 		rss = IOK2IOK_RXPKT_GET_RSS(payload);
 
@@ -316,7 +316,7 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n)
 
 			STAT_INC(RX_UNICAST_FAIL, 1);
 			STAT_INC(RX_UNHANDLED, 1);
-			success = msg_send(&iok_as_secondary_txcmdq[cfg.seciok_index],
+			success = msg_send(&iok_as_secondary_txcmdq[pmyiok_index][cfg.seciok_index],
 					   IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0),
 					   completion_data);
 			RT_BUG_ON(!success);
@@ -336,8 +336,11 @@ bool rx_burst(void)
 	uint16_t nb_rx, i;
 
 	if (cfg.is_secondary) {
-		nb_rx = rx_burst_from_pmyiok(&iok_as_secondary_rxq[cfg.seciok_index],
-					     IOKERNEL_RX_BURST_SIZE);
+		nb_rx = 0;
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			nb_rx += rx_burst_from_pmyiok(&iok_as_secondary_rxq[i][cfg.seciok_index],
+			                              IOKERNEL_RX_BURST_SIZE, i);
+		}
 		STAT_INC(RX_PULLED, nb_rx);
 		return nb_rx > 0;
 	}
@@ -361,7 +364,7 @@ bool rx_burst(void)
 
 	if (!cfg.is_secondary) {
 		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
-			msg_out_sync(&iok_as_primary_rxq[i]);
+			msg_out_sync(&iok_as_primary_rxq[cfg.pmyiok_index][i]);
 		}
 	}
 

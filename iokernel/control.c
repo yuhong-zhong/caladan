@@ -63,22 +63,22 @@ struct iokernel_info *iok_info;
 /* iok2iok communication */
 
 /* primary iokernel */
-struct msg_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK];
-struct msg_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK];
-struct msg_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK];
-struct msg_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK];
+struct msg_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
-struct msg_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK];
-struct msg_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK];
+struct msg_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
 /* secondary iokernel */
-struct msg_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK];
-struct msg_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK];
-struct msg_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK];
-struct msg_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK];
+struct msg_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
-struct msg_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK];
-struct msg_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK];
+struct msg_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+struct msg_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
 BUILD_ASSERT(RX_CALL_NR < (1ul << IOK2IOK_RAWCMD_BITS));
 // BUILD_ASSERT(TXPKT_NR < (1ul << IOK2IOK_RAWCMD_BITS));
@@ -390,6 +390,7 @@ static void control_add_client(void)
 	uint64_t client_status_code;
 	ssize_t ret;
 	int fd;
+	int cur_pmyiok_index;  // not used for pmyiok
 	// int mem_fd;
 
 	fd = accept(controlfd, NULL, NULL);
@@ -417,6 +418,13 @@ static void control_add_client(void)
 	batch_clflushopt(client_shm_buf, sizeof(struct iokernel_info));
 	_mm_mfence();
 #endif
+
+	ret = read(fd, &cur_pmyiok_index, sizeof(cur_pmyiok_index));
+	if (ret != sizeof(cur_pmyiok_index)) {
+		log_err("control_add_client: read(cur_pmyiok_index) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		RT_BUG_ON(true);
+	}
 
 	ret = write(fd, &client_cxl_offset, sizeof(client_cxl_offset));
 	if (ret != sizeof(client_cxl_offset)) {
@@ -560,6 +568,7 @@ static void control_seciok_add_client(void)
 	bool succeed;
 	unsigned long payload;
 	int lrpc_control_fd;
+	int cur_pmyiok_index;
 	uint16_t iok2iok_proc_index;
 	// int mem_fd;
 
@@ -582,8 +591,15 @@ static void control_seciok_add_client(void)
 		goto fail;
 	}
 
-	chan_in = &iok_as_secondary_cmdq_in[cfg.seciok_index];
-	chan_out = &iok_as_secondary_cmdq_out[cfg.seciok_index];
+	ret = read(fd, &cur_pmyiok_index, sizeof(cur_pmyiok_index));
+	if (ret != sizeof(cur_pmyiok_index)) {
+		log_err("control_seciok_add_client: read(cur_pmyiok_index) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		goto fail;
+	}
+
+	chan_in = &iok_as_secondary_cmdq_in[cur_pmyiok_index][cfg.seciok_index];
+	chan_out = &iok_as_secondary_cmdq_out[cur_pmyiok_index][cfg.seciok_index];
 
 	log_info("control_seciok_add_client: about to send IOK2IOK_CMD_ADD_CLIENT");
 
@@ -659,8 +675,9 @@ static void control_seciok_add_client(void)
 	nr_clients++;
 	p->control_fd = fd;
 	p->lrpc_control_fd = lrpc_control_fd;
+	p->cur_pmyiok_index = cur_pmyiok_index;
 	p->iok2iok_index = iok2iok_proc_index;
-	iok2iok_proc_as_seciok[cfg.seciok_index][iok2iok_proc_index] = p;
+	iok2iok_proc_as_seciok[cur_pmyiok_index][iok2iok_proc_index] = p;
 
 	sched_attach_proc(p);
 
@@ -686,7 +703,7 @@ static void control_seciok_remove_client(struct proc *p)
 	log_info("control_seciok_remove_client: remove client %d", p->pid);
 
 	RT_BUG_ON(unlikely(p->is_remote));
-	chan_out = &iok_as_secondary_cmdq_out[cfg.seciok_index];
+	chan_out = &iok_as_secondary_cmdq_out[p->cur_pmyiok_index][cfg.seciok_index];
 	succeed = msg_send(chan_out, IOK2IOK_CMD_REMOVE_CLIENT, (unsigned long) p->lrpc_control_fd);
 	RT_BUG_ON(!succeed);
 
@@ -711,7 +728,7 @@ static void control_seciok_remove_client(struct proc *p)
 	if (p->attach_fail)
 		kill(p->pid, SIGINT);
 
-	iok2iok_proc_as_seciok[cfg.seciok_index][p->iok2iok_index] = NULL;
+	iok2iok_proc_as_seciok[p->cur_pmyiok_index][p->iok2iok_index] = NULL;
 	nr_clients--;
 	free(p->overflow_queue);
 	free(p);
@@ -822,8 +839,8 @@ static void handle_add_client_lrpc(int seciok_index)
 	log_info("handle_add_client_lrpc: receive IOK2IOK_CMD_ADD_CLIENT from seciok_index=%d",
 		 seciok_index);
 
-	in_chan = &iok_as_primary_cmdq_in[seciok_index];
-	out_chan = &iok_as_primary_cmdq_out[seciok_index];
+	in_chan = &iok_as_primary_cmdq_in[cfg.pmyiok_index][seciok_index];
+	out_chan = &iok_as_primary_cmdq_out[cfg.pmyiok_index][seciok_index];
 
 	// Make sure it's an abstract namespace path.
 	assert(CONTROL_SOCK_PATH_PREFIX[0] == '\0');
@@ -929,7 +946,7 @@ static void control_lrpc_loop(void)
 
 	while (true) {
 		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
-			chan = &iok_as_primary_cmdq_in[i];
+			chan = &iok_as_primary_cmdq_in[cfg.pmyiok_index][i];
 			if (msg_recv(chan, &cmd, &payload)) {
 				switch (cmd) {
 				case IOK2IOK_CMD_ADD_CLIENT:
@@ -1037,70 +1054,71 @@ int control_init(void)
 	int sfd, ret;
 	void *shbuf;
 	uint64_t shbuf_cxl_offset;
+	int pmyiok_index;
 	int i;
 	void *qp_head_arr;
 
-	qp_head_arr = cxl_early_alloc(CACHE_LINE_SIZE * 6 * MAX_NR_IOK2IOK, PGSIZE_2MB, &shbuf_cxl_offset);
-	RT_BUG_ON(qp_head_arr == NULL);
-	RT_BUG_ON(shbuf_cxl_offset != 0);
+	for (pmyiok_index = 0; pmyiok_index < MAX_NR_IOK2IOK; ++pmyiok_index) {
+		qp_head_arr = cxl_early_alloc(CACHE_LINE_SIZE * 6 * MAX_NR_IOK2IOK, PGSIZE_2MB, &shbuf_cxl_offset);
+		RT_BUG_ON(qp_head_arr == NULL);
 
-	for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
-		shbuf = cxl_early_alloc(IOK2IOK_TOTAL_SHM_SIZE, PGSIZE_2MB, &shbuf_cxl_offset);
-		RT_BUG_ON(shbuf == NULL);
-		RT_BUG_ON(shbuf_cxl_offset != (i + 1) * PGSIZE_2MB);
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			shbuf = cxl_early_alloc(IOK2IOK_TOTAL_SHM_SIZE, PGSIZE_2MB, &shbuf_cxl_offset);
+			RT_BUG_ON(shbuf == NULL);
 
-		if (cfg.is_secondary) {
-			ret = msg_init_in(&iok_as_secondary_rxq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_in(&iok_as_secondary_rxcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_out(&iok_as_secondary_txpktq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_out(&iok_as_secondary_txcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
+			if (cfg.is_secondary) {
+				ret = msg_init_in(&iok_as_secondary_rxq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_in(&iok_as_secondary_rxcmdq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_out(&iok_as_secondary_txpktq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_out(&iok_as_secondary_txcmdq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
 
-			ret = msg_init_out(&iok_as_secondary_cmdq_out[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_CMD_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_in(&iok_as_secondary_cmdq_in[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_CMD_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-		} else {
-			ret = msg_init_out(&iok_as_primary_rxq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_out(&iok_as_primary_rxcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_in(&iok_as_primary_txpktq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_in(&iok_as_primary_txcmdq[i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_DP_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_out(&iok_as_secondary_cmdq_out[pmyiok_index][i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_CMD_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_in(&iok_as_secondary_cmdq_in[pmyiok_index][i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_CMD_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+			} else {
+				ret = msg_init_out(&iok_as_primary_rxq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_out(&iok_as_primary_rxcmdq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_in(&iok_as_primary_txpktq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_in(&iok_as_primary_txcmdq[pmyiok_index][i], shbuf, IOK2IOK_DP_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_DP_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
 
-			ret = msg_init_in(&iok_as_primary_cmdq_in[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_CMD_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
-			ret = msg_init_out(&iok_as_primary_cmdq_out[i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
-			RT_BUG_ON(ret != 0);
-			shbuf += IOK2IOK_CMD_SHM_SIZE;
-			qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_in(&iok_as_primary_cmdq_in[pmyiok_index][i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_CMD_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+				ret = msg_init_out(&iok_as_primary_cmdq_out[pmyiok_index][i], shbuf, IOK2IOK_CMD_QUEUE_SIZE, (uint32_t *) qp_head_arr);
+				RT_BUG_ON(ret != 0);
+				shbuf += IOK2IOK_CMD_SHM_SIZE;
+				qp_head_arr += CACHE_LINE_SIZE;
+			}
 		}
 	}
 

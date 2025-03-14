@@ -832,6 +832,7 @@ static void handle_add_client_lrpc(int seciok_index)
 	bool succeed;
 	uint64_t cmd;
 	unsigned long status_code;
+	int cur_pmyiok_index = 0;  // not used in pmyiok
 
 	struct msg_chan_in *in_chan;
 	struct msg_chan_out *out_chan;
@@ -861,6 +862,13 @@ static void handle_add_client_lrpc(int seciok_index)
 	if (connect(fd, (struct sockaddr *)&addr,
 		 sizeof(addr.sun_family) + strlen(addr.sun_path + 1) + 2) == -1) {
 		log_err("handle_add_client_lrpc: connect() failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	ret = write(fd, &cur_pmyiok_index, sizeof(cur_pmyiok_index));
+	if (ret != sizeof(cur_pmyiok_index)) {
+		log_err("handle_add_client_lrpc: write(cur_pmyiok_index) failed, len=%ld [%s]",
+			ret, strerror(errno));
 		RT_BUG_ON(true);
 	}
 

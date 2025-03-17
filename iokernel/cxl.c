@@ -19,10 +19,10 @@ uint8_t *cxl_buf;
 
 spinlock_t lock;
 uint64_t early_allocated;
-bool after_early_alloc;
 
 uint8_t *client_buf_base;
-DEFINE_BITMAP(free_client_slots, IOKERNEL_MAX_PROC);
+uint64_t client_buf_offset;
+DEFINE_BITMAP(free_client_slots, MAX_NR_CXL_CLIENTS);
 
 void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset)
 {
@@ -30,7 +30,6 @@ void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offse
         void *ptr;
 
         RT_BUG_ON(alignment == 0);
-        RT_BUG_ON(after_early_alloc);
 
         spin_lock(&lock);
         log_info("cxl: early allocation of memory, size = 0x%lx, alignment = 0x%lx, allocated = 0x%lx", size, alignment, early_allocated);
@@ -47,33 +46,28 @@ void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offse
         return ptr;
 }
 
+void cxl_set_client_base(uint64_t offset)
+{
+        spin_lock(&lock);
+        client_buf_base = cxl_buf + offset;
+        client_buf_offset = offset;
+        RT_BUG_ON(offset % PGSIZE_2MB != 0);
+        RT_BUG_ON(offset >= early_allocated);
+        spin_unlock(&lock);
+}
+
 void *cxl_alloc_client(uint64_t *out_cxl_offset)
 {
-        uint64_t num_free_client_slots;
         int i;
 
         log_info("cxl: allocating shared memory for a new client");
         RT_BUG_ON(unlikely(cfg.is_secondary));
 
         spin_lock(&lock);
+        RT_BUG_ON(client_buf_base == NULL);
 
-        if (UNLIKELY(!after_early_alloc)) {
-                after_early_alloc = true;
-                early_allocated = ROUND_UP(early_allocated, CXL_CLIENT_SIZE);
-                RT_BUG_ON(early_allocated > iok_cxl_size);
-                client_buf_base = cxl_buf + early_allocated;
-
-                num_free_client_slots = (iok_cxl_size - early_allocated) / CXL_CLIENT_SIZE;
-                RT_BUG_ON(num_free_client_slots == 0);
-                num_free_client_slots = MIN(num_free_client_slots, IOKERNEL_MAX_PROC);
-                for (i = 0; i < (int) num_free_client_slots; i++) {
-                        bitmap_set(free_client_slots, i);
-                }
-                log_info("cxl: early allocation finished, allocated = 0x%lx, num_free_client_slots = 0x%lx", early_allocated, num_free_client_slots);
-        }
-
-        i = bitmap_find_next_set(free_client_slots, IOKERNEL_MAX_PROC, 0);
-        RT_BUG_ON(i == IOKERNEL_MAX_PROC);
+        i = bitmap_find_next_set(free_client_slots, MAX_NR_CXL_CLIENTS, 0);
+        RT_BUG_ON(i == MAX_NR_CXL_CLIENTS);
         bitmap_clear(free_client_slots, i);
 
         spin_unlock(&lock);
@@ -85,14 +79,14 @@ void *cxl_alloc_client(uint64_t *out_cxl_offset)
 #endif
 
         if (out_cxl_offset != NULL)
-                *out_cxl_offset = early_allocated + i * CXL_CLIENT_SIZE;
+                *out_cxl_offset = client_buf_offset + i * CXL_CLIENT_SIZE;
         return client_buf_base + i * CXL_CLIENT_SIZE;
 }
 
 void cxl_free_client(void *ptr)
 {
         int i = (int) (((uint64_t) ptr - (uint64_t) client_buf_base) / CXL_CLIENT_SIZE);
-        RT_BUG_ON(i < 0 || i >= IOKERNEL_MAX_PROC);
+        RT_BUG_ON(i < 0 || i >= MAX_NR_CXL_CLIENTS);
         RT_BUG_ON(unlikely(cfg.is_secondary));
 
         log_info("cxl: freeing shared memory for a client allocated at index %d", i);
@@ -176,9 +170,8 @@ int cxl_init(void)
 
         spin_lock_init(&lock);
         early_allocated = 0;
-        after_early_alloc = false;
         client_buf_base = NULL;
-        bitmap_init(free_client_slots, IOKERNEL_MAX_PROC, false);
+        bitmap_init(free_client_slots, MAX_NR_CXL_CLIENTS, true);
 
         return 0;
 }

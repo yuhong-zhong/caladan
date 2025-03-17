@@ -331,7 +331,7 @@ int ioqueues_init(void)
 
 		fd = open(rt_cxl_path, O_RDWR);
 		RT_BUG_ON(fd < 0);
-		netcfg.rx_region.base = mmap(NULL, INGRESS_MBUF_SHM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, iok.iok_info->rx_cxl_shm_offset);
+		netcfg.rx_region.base = mmap(NULL, INGRESS_MBUF_SHM_SIZE * MAX_NR_IOK2IOK, PROT_READ | PROT_WRITE, MAP_SHARED, fd, iok.iok_info->rx_cxl_shm_offset);
 		RT_BUG_ON(netcfg.rx_region.base == MAP_FAILED);
 		close(fd);
 		// netcfg.rx_region.base =
@@ -342,7 +342,7 @@ int ioqueues_init(void)
 		// 	log_err("Please make sure IOKernel is running");
 		// 	return -1;
 		// }
-		netcfg.rx_region.len = INGRESS_MBUF_SHM_SIZE;
+		netcfg.rx_region.len = INGRESS_MBUF_SHM_SIZE * MAX_NR_IOK2IOK;
 	}
 
 	/* set up queues in shared memory */

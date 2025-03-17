@@ -426,7 +426,7 @@ static struct rte_mempool *rx_pktmbuf_pool_create_in_shm(const char *name,
 		goto fail_free_mempool;
 	}
 
-	shbuf = dp.ingress_mbuf_region.base;
+	shbuf = dp.ingress_mbuf_region.base + cfg.pmyiok_index * INGRESS_MBUF_SHM_SIZE;
 
 	/* hack to make sure that this memory area is registered in DPDK */
 	/* use rte_extmem_* and rte_dev_dma_map in the future */

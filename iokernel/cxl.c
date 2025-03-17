@@ -159,13 +159,6 @@ int cxl_init(void)
         cxl_buf = (uint8_t *) mmap(NULL, iok_cxl_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         RT_BUG_ON(cxl_buf == MAP_FAILED);
         RT_BUG_ON((uint64_t) cxl_buf % PGSIZE_2MB != 0);
-        if (!cfg.is_secondary) {
-                memset(cxl_buf, 0, iok_cxl_size);
-        }
-#ifdef NO_CACHE_COHERENCE
-        batch_clflushopt(cxl_buf, iok_cxl_size);
-        _mm_mfence();
-#endif
         close(fd);
 
         spin_lock_init(&lock);

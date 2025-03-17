@@ -479,7 +479,7 @@ extern uint64_t iok_cxl_size;
 extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset);
 
 #define CXL_CLIENT_SIZE (1UL << 32UL)
-#define MAX_NR_CXL_CLIENTS (1UL << 4UL)
+#define MAX_NR_CXL_CLIENTS (4UL)
 
 extern void cxl_set_client_base(uint64_t offset);
 extern void *cxl_alloc_client(uint64_t *out_cxl_offset);

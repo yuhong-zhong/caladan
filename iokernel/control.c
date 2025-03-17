@@ -1062,6 +1062,8 @@ int control_init(void)
 	int sfd, ret;
 	void *shbuf;
 	uint64_t shbuf_cxl_offset;
+	void *client_buf;
+	uint64_t client_buf_cxl_offset;
 	int pmyiok_index;
 	int i;
 	void *qp_head_arr;
@@ -1131,7 +1133,7 @@ int control_init(void)
 	}
 
 	if (!cfg.vfio_directpath) {
-		shbuf = cxl_early_alloc(INGRESS_MBUF_SHM_SIZE, PGSIZE_2MB, &shbuf_cxl_offset);
+		shbuf = cxl_early_alloc(INGRESS_MBUF_SHM_SIZE * MAX_NR_IOK2IOK, PGSIZE_2MB, &shbuf_cxl_offset);
 		RT_BUG_ON(shbuf == NULL);
 		// shbuf = mem_map_shm(INGRESS_MBUF_SHM_KEY, NULL, INGRESS_MBUF_SHM_SIZE,
 		// 		cfg.no_hugepages ? PGSIZE_4KB : PGSIZE_2MB, true);
@@ -1144,8 +1146,12 @@ int control_init(void)
 		// 	return -1;
 		// }
 		dp.ingress_mbuf_region.base = shbuf;
-		dp.ingress_mbuf_region.len = INGRESS_MBUF_SHM_SIZE;
+		dp.ingress_mbuf_region.len = INGRESS_MBUF_SHM_SIZE * MAX_NR_IOK2IOK;
 
+		client_buf = cxl_early_alloc(CXL_CLIENT_SIZE * MAX_NR_CXL_CLIENTS * MAX_NR_IOK2IOK, PGSIZE_2MB, &client_buf_cxl_offset);
+		RT_BUG_ON(client_buf == NULL);
+		if (!cfg.is_secondary)
+			cxl_set_client_base(client_buf_cxl_offset + cfg.pmyiok_index * (CXL_CLIENT_SIZE * MAX_NR_CXL_CLIENTS));
 	}
 
 	shbuf = aligned_alloc(PGSIZE_4KB, IOKERNEL_INFO_SIZE);

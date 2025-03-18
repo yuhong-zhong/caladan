@@ -183,6 +183,7 @@ struct proc {
 	unsigned int		started:1;
 	unsigned int		has_storage:1;
 	unsigned int		is_remote:1;
+	unsigned int		is_bak:1;
 	unsigned long		policy_data;
 	unsigned long		directpath_data;
 	uint64_t		next_poll_tsc;

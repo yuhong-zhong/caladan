@@ -1213,7 +1213,7 @@ static void handle_bak_add_client_lrpc(int seciok_index)
 	succeed = msg_send(out_chan, IOK2IOK_CMD_BAK_PROC_IDX, (unsigned long) iok2iok_proc_index);
 	RT_BUG_ON(!succeed);
 
-	log_info("handle_bak_add_client_lrpc: bak_pmyiok_index=%d, bak_iok2iok_proc_index=%d", bak_pmyiok_index, bak_iok2iok_proc_index);
+	log_info("handle_bak_add_client_lrpc: bak_pmyiok_index=%d, bak_iok2iok_proc_index=%d", cfg.pmyiok_index, iok2iok_proc_index);
 }
 
 static void handle_remove_client_lrpc(int seciok_index, unsigned long payload)

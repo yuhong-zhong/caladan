@@ -206,6 +206,7 @@ struct proc {
 	/* COLD */
 	uint16_t 	dp_clients_idx;
 	uint16_t 	iok2iok_index;
+	uint16_t 	bak_iok2iok_index;
 	uint16_t	uniqid;
 
 	/* network data */
@@ -228,12 +229,13 @@ struct proc {
 	struct thread		*active_threads[NCPU];
 	int				control_fd;
 	int			lrpc_control_fd;
+	int			bak_lrpc_control_fd;
 	pid_t			pid;
 
 	int			seciok_index;
 
 	volatile int		cur_pmyiok_index;
-	volatile int		next_pmyiok_index;
+	volatile int		bak_pmyiok_index;
 
 	/* table of physical addresses for shared memory */
 	physaddr_t		page_paddrs[];

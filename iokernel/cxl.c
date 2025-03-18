@@ -137,7 +137,6 @@ void *cxl_get_client(uint64_t cxl_offset)
 {
         RT_BUG_ON(cxl_offset % PGSIZE_2MB != 0);
         RT_BUG_ON(cxl_offset + CXL_CLIENT_SIZE >= iok_cxl_size);
-        RT_BUG_ON(unlikely(!cfg.is_secondary));
 
         return cxl_buf + cxl_offset;
 }

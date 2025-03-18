@@ -396,6 +396,12 @@ static int parse_pmyiok_index(const char *name, const char *val)
 	return 0;
 }
 
+static int parse_bak_pmyiok_index(const char *name, const char *val)
+{
+	bak_pmyiok_index = atoi(val);
+	return 0;
+}
+
 #ifdef NO_SCHED
 void parse_list_str(char *list, bitmap_ptr_t bitmap) {
 	char *rest_list;
@@ -431,6 +437,7 @@ static const struct cfg_handler cfg_early_handler[] = {
 	{ "runtime_cxl_path", parse_cxl_path, true },
 	{ "runtime_iok_socket_index", parse_iok_socket_index, false },
 	{ "runtime_pmyiok_index", parse_pmyiok_index, false },
+	{ "runtime_bak_pmyiok_index", parse_bak_pmyiok_index, false },
 #ifdef NO_SCHED
 	{ "runtime_cores", parse_cores, true },
 #endif

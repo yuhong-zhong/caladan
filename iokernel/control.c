@@ -204,7 +204,7 @@ static int control_init_hwq(struct shm_region *r,
 }
 
 static struct proc *control_create_proc(void *shbuf, size_t len,
-		 pid_t pid, bool is_remote)
+		 pid_t pid, bool is_remote, bool is_bak)
 {
 	struct control_hdr hdr;
 	struct shm_region reg = {NULL};
@@ -252,6 +252,7 @@ static struct proc *control_create_proc(void *shbuf, size_t len,
 	memset(p, 0, sizeof(*p));
 
 	p->is_remote = is_remote;
+	p->is_bak = is_bak;
 	p->pid = pid;
 	ref_init(&p->ref);
 	p->region = reg;
@@ -354,7 +355,7 @@ fail:
 		free(p->overflow_queue);
 	free(threads);
 	free(p);
-	if (reg.base)
+	if (reg.base && !is_bak && !cfg.is_secondary)
 		// munmap(reg.base, reg.len);
 		cxl_free_client(reg.base - PGSIZE_2MB);
 	kill(pid, SIGINT);
@@ -372,7 +373,7 @@ static void control_destroy_proc(struct proc *p)
 	bitmap_clear(iok2iok_proc_ids, p->iok2iok_index);
 	iok2iok_proc_as_pmyiok[p->iok2iok_index] = NULL;
 	nr_clients--;
-	if (!cfg.is_secondary) {
+	if (!cfg.is_secondary && !p->is_bak) {
 		// munmap(p->region.base, p->region.len);
 		cxl_free_client(p->region.base - PGSIZE_2MB);
 	}
@@ -406,7 +407,7 @@ static void control_bak_add_client(int fd, struct ucred *ucred)
 	log_info("control_bak_add_client: client_cxl_offset: 0x%lx, client_cxl_len: 0x%lx", client_cxl_offset, client_cxl_len);
 
 	p = control_create_proc(client_shm_buf + PGSIZE_2MB, client_cxl_len - PGSIZE_2MB,
-				ucred->pid, true);
+				ucred->pid, true, true);
 	if (!p) {
 		log_err("control_bak_add_client: failed to create process '%d'", ucred->pid);
 		RT_BUG_ON(true);
@@ -553,7 +554,7 @@ static void control_add_client(void)
 	// }
 
 	p = control_create_proc(client_shm_buf + PGSIZE_2MB, client_cxl_len - PGSIZE_2MB,
-				ucred.pid, client_status_code == IOK_REGISTER_SECONDARY);
+				ucred.pid, client_status_code == IOK_REGISTER_SECONDARY, false);
 	if (!p) {
 		log_err("control: failed to create process '%d'", ucred.pid);
 		goto fail;
@@ -809,7 +810,7 @@ static void control_seciok_add_client(void)
 	RT_BUG_ON(client_shm_buf == NULL);
 
 	p = control_create_proc(client_shm_buf + PGSIZE_2MB, client_cxl_len - PGSIZE_2MB,
-				ucred.pid, false);
+				ucred.pid, false, false);
 	if (!p) {
 		log_err("control: failed to create process '%d'", ucred.pid);
 		goto fail;

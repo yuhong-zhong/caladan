@@ -195,7 +195,9 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 
 	ether_type = rte_be_to_cpu_16(ptr_mac_hdr->ether_type);
 #ifdef NO_CACHE_COHERENCE
-	clflushopt(ptr_mac_hdr);
+	// clflushopt(ptr_mac_hdr);
+	_mm_mfence();
+	batch_clflushopt(ptr_mac_hdr, sizeof(*ptr_mac_hdr));
 #endif
 
 	if (likely(ether_type == ETHTYPE_IP)) {
@@ -203,14 +205,16 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 			sizeof(*ptr_mac_hdr));
 		dst_ip = rte_be_to_cpu_32(iphdr->dst_addr);
 #ifdef NO_CACHE_COHERENCE
-		clflushopt(iphdr);
+		_mm_mfence();
+		batch_clflushopt(iphdr, sizeof(*iphdr));
 #endif
 	} else if (ether_type == ETHTYPE_ARP) {
 		arphdr = rte_pktmbuf_mtod_offset(buf, struct rte_arp_hdr *,
 			sizeof(*ptr_mac_hdr));
 		dst_ip = rte_be_to_cpu_32(arphdr->arp_data.arp_tip);
 #ifdef NO_CACHE_COHERENCE
-		clflushopt(arphdr);
+		_mm_mfence();
+		batch_clflushopt(arphdr, sizeof(*arphdr));
 #endif
 
 		// Azure's faked ARP replies always go to the default NIC

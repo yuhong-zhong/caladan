@@ -312,7 +312,13 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_inde
 
 		rss = IOK2IOK_RXPKT_GET_RSS(payload);
 
-		success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+		if (p->cur_pmyiok_index == pmyiok_index) {
+			success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+		} else {
+			// reject packets from backup pmyiok
+			success = false;
+		}
+
 		if (!success) {
 			shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
 			off = IOK2IOK_RXPKT_GET_OFF(rawcmd);

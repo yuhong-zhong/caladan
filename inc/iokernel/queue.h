@@ -77,3 +77,7 @@ enum {
 	TXCMD_NET_COMPLETE = 0,	/* contains completion_data */
 	TXCMD_NR,		/* number of commands */
 };
+
+#define TXCMD_MAKE_CMD(cmd, aux) (((uint64_t) cmd) | (((uint64_t) aux) << 2ul))
+#define TXCMD_GET_CMD(cmd) (cmd & 0x3ul)
+#define TXCMD_GET_AUX(cmd) (cmd >> 2ul)

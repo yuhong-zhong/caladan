@@ -93,12 +93,12 @@ static uint32_t compute_flow_affinity(uint8_t ipproto, uint16_t local_port, stru
 	return ret % (uint32_t)maxks;
 }
 
-static void net_rx_send_completion(unsigned long completion_data)
+static void net_rx_send_completion(uint32_t pmyiok_index, unsigned long completion_data)
 {
 	struct kthread *k;
 
 	k = getk();
-	if (unlikely(!lrpc_send(&k->txcmdq, TXCMD_NET_COMPLETE,
+	if (unlikely(!lrpc_send(&k->txcmdq, TXCMD_MAKE_CMD(TXCMD_NET_COMPLETE, pmyiok_index),
 				completion_data))) {
 		log_warn_ratelimited("failed to send rx completion to iokernel");
 	}
@@ -107,7 +107,7 @@ static void net_rx_send_completion(unsigned long completion_data)
 
 static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 {
-	uint32_t len, off, csum_type, rss_hash;
+	uint32_t len, off, pmyiok_index, csum_type, rss_hash;
 	shmptr_t shmptr;
 	void *packet;
 	struct mbuf *m;
@@ -115,6 +115,7 @@ static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 
 	len = IOK2IOK_RXPKT_GET_LEN(aux);
 	off = IOK2IOK_RXPKT_GET_OFF(aux);
+	pmyiok_index = IOK2IOK_RXPKT_GET_PMYIOK_INDEX(aux);
 	csum_type = IOK2IOK_RXPKT_GET_CSUM_TYPE(aux);
 
 	rss_hash = IOK2IOK_RXPKT_GET_RSS(payload);
@@ -150,7 +151,7 @@ static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 	m->release = (void (*)(struct mbuf *))sfree;
 
 out:
-	net_rx_send_completion(((uint64_t) shmptr) - ((uint64_t) off));
+	net_rx_send_completion(pmyiok_index, ((uint64_t) shmptr) - ((uint64_t) off));
 	return m;
 }
 

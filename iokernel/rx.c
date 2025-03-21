@@ -61,7 +61,7 @@ void parse_mbuf(struct rte_mbuf *buf, uint32_t *len, uint32_t *off, uint32_t *cs
 
 	*len = rte_pktmbuf_pkt_len(buf);
 	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
-	RT_BUG_ON(*len >= (1u << 16u));
+	RT_BUG_ON(*len >= (1u << 14u));
 
 	masked_ol_flags = buf->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
 	if (masked_ol_flags == RTE_MBUF_F_RX_IP_CKSUM_GOOD)
@@ -77,7 +77,7 @@ void parse_mbuf(struct rte_mbuf *buf, uint32_t *len, uint32_t *off, uint32_t *cs
 
 	*off = (uint32_t) ((uint64_t) (*packet) - (uint64_t) buf);
 	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
-	RT_BUG_ON(*off >= (1u << 13u));
+	RT_BUG_ON(*off >= (1u << 12u));
 }
 
 static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
@@ -95,9 +95,10 @@ static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 	// IOK2IOK_RXPKT_MAKE_PAYLOAD assumption
 	RT_BUG_ON(shmptr > UINT32_MAX);
 
-	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, csum_type);
+	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, cfg.pmyiok_index, csum_type);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_LEN(rawcmd) != len);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_OFF(rawcmd) != off);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_PMYIOK_INDEX(rawcmd) != cfg.pmyiok_index);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) != csum_type);
 	payload = IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss_hash);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
@@ -121,9 +122,10 @@ static bool rx_send_pkt_to_runtime(struct proc *p, struct rte_mbuf *buf)
 	RT_BUG_ON(unlikely(p->is_remote));
 
 	parse_mbuf(buf, &len, &off, &csum_type, &rss_hash, &packet);
-	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, csum_type);
+	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, cfg.pmyiok_index, csum_type);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_LEN(rawcmd) != len);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_OFF(rawcmd) != off);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_PMYIOK_INDEX(rawcmd) != cfg.pmyiok_index);
 	RT_BUG_ON(IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) != csum_type);
 
 	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, packet, sizeof(*packet));
@@ -312,14 +314,20 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_inde
 
 		rss = IOK2IOK_RXPKT_GET_RSS(payload);
 
-		if (p->cur_pmyiok_index == pmyiok_index) {
-			success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
-			if (!success) {
-				log_warn_ratelimited("rx: failed to send packet to runtime");
-			}
-		} else {
-			// reject packets from backup pmyiok
-			success = false;
+		// if (p->cur_pmyiok_index == pmyiok_index) {
+		// 	success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+		// 	if (!success) {
+		// 		log_warn_ratelimited("rx: failed to send packet to runtime");
+		// 	}
+		// } else {
+		// 	// reject packets from backup pmyiok
+		// 	success = false;
+		// }
+
+		// FIXME: temporarily allow packets from any pmyiok
+		success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+		if (!success) {
+			log_warn_ratelimited("rx: failed to send packet to runtime");
 		}
 
 		if (!success) {

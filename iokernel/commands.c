@@ -16,15 +16,19 @@ static int commands_drain_queue(struct thread *t, unsigned long *bufs, int *proc
 
 	for (i = 0; i < n; i++) {
 		uint64_t cmd;
+		uint32_t txcmd_cmd;
+		uint32_t txcmd_aux;
 		unsigned long payload;
 
 		if (!lrpc_recv(&t->txcmdq, &cmd, &payload))
 			break;
 
-		switch (cmd) {
+		txcmd_cmd = TXCMD_GET_CMD(cmd);
+		txcmd_aux = TXCMD_GET_AUX(cmd);
+		switch (txcmd_cmd) {
 		case TXCMD_NET_COMPLETE:
 			bufs[n_bufs] = payload;
-			proc_pmyiok_indices[n_bufs] = t->p->cur_pmyiok_index;
+			proc_pmyiok_indices[n_bufs] = (int) txcmd_aux;
 			n_bufs++;
 			/* TODO: validate pointer @buf */
 			break;

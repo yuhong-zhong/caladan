@@ -96,10 +96,13 @@ enum {
 #define IOK2IOK_TXPKT_GET_LEN(rawcmd) ((rawcmd) & 0xffffu)
 #define IOK2IOK_TXPKT_GET_OLFLAGS(rawcmd) ((rawcmd) >> 16u)
 
-#define IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, csum_type) (((uint32_t) len) | (((uint32_t) off) << 16u) | (((uint32_t) csum_type) << 29u))
-#define IOK2IOK_RXPKT_GET_LEN(rawcmd) ((rawcmd) & 0xffffu)
-#define IOK2IOK_RXPKT_GET_OFF(rawcmd) (((rawcmd) >> 16u) & 0x1fffu)
-#define IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) ((rawcmd) >> 29u)
+#define IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, pmyiok_index, csum_type) (((uint32_t) len) | (((uint32_t) off) << 14u) | (((uint32_t) pmyiok_index) << 26u) | (((uint32_t) csum_type) << 30u))
+#define IOK2IOK_RXPKT_GET_LEN(rawcmd) ((rawcmd) & 0x3fffu)
+#define IOK2IOK_RXPKT_GET_OFF(rawcmd) (((rawcmd) >> 14u) & 0xfffu)
+#define IOK2IOK_RXPKT_GET_PMYIOK_INDEX(rawcmd) (((rawcmd) >> 26u) & 0xf)
+#define IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) ((rawcmd) >> 30u)
+
+BUILD_ASSERT(MAX_NR_IOK2IOK <= 0xf);
 
 #define IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss) (((uint64_t) shmptr) | (((uint64_t) rss) << 32ul))
 #define IOK2IOK_RXPKT_GET_SHMPTR(payload) ((shmptr_t) (payload & 0xfffffffful))

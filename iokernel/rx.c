@@ -314,6 +314,9 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_inde
 
 		if (p->cur_pmyiok_index == pmyiok_index) {
 			success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+			if (!success) {
+				log_warn_ratelimited("rx: failed to send packet to runtime");
+			}
 		} else {
 			// reject packets from backup pmyiok
 			success = false;
@@ -330,7 +333,6 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_inde
 					   IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0),
 					   completion_data);
 			RT_BUG_ON(!success);
-			log_warn_ratelimited("rx: failed to send packet to runtime");
 		}
 	}
 

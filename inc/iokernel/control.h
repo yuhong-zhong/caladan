@@ -67,6 +67,8 @@ extern struct msg_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IO
 extern struct msg_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 extern struct msg_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
 
+extern struct eth_addr pmyiok_mac_arr[MAX_NR_IOK2IOK];
+
 enum {
 	IOK2IOK_CMD_ADD_CLIENT = 0,
 	IOK2IOK_CMD_CXL_OFFSET,
@@ -82,6 +84,9 @@ enum {
 	IOK2IOK_CMD_BAK_LRPC_FD,
 	IOK2IOK_CMD_BAK_PROC_IDX,
 	IOK2IOK_CMD_BAK_REMOVE_CLIENT,
+
+	IOK2IOK_CMD_GET_MAC,
+	IOK2IOK_CMD_REPLY_MAC,
 
 	IOK2IOK_CMD_NR,
 };

@@ -192,6 +192,7 @@ static void net_rx_one(struct mbuf *m)
 	const struct eth_hdr *llhdr;
 	const struct ip_hdr *iphdr;
 	uint16_t len;
+	struct kthread *k = myk();
 
 	STAT(RX_PACKETS)++;
 	STAT(RX_BYTES) += mbuf_length(m);
@@ -213,9 +214,9 @@ static void net_rx_one(struct mbuf *m)
 	}
 
 	/* filter out requests we can't handle */
-	BUILD_ASSERT(sizeof(llhdr->dhost.addr) == sizeof(netcfg.mac.addr));
+	BUILD_ASSERT(sizeof(llhdr->dhost.addr) == sizeof(k->mac.addr));
 	if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP ||
-		     memcmp(llhdr->dhost.addr, netcfg.mac.addr,
+		     memcmp(llhdr->dhost.addr, k->mac.addr,
 			    sizeof(llhdr->dhost.addr)) != 0)) {
 		log_err_ratelimited("net: dropping unsupported packet, type %x",
 				    ntoh16(llhdr->type));
@@ -330,6 +331,13 @@ static void iokernel_softirq_poll(struct kthread *k)
 		case RX_REFILL_BUFS:
 			BUG_ON(!net_ops.trigger_rx_refill);
 			net_ops.trigger_rx_refill();
+			break;
+
+		case RX_UPDATE_MAC:
+			uint64_to_eth_addr(payload, &k->mac);
+			log_info("net: updated MAC address to %02X:%02X:%02X:%02X:%02X:%02X",
+			         k->mac.addr[0], k->mac.addr[1], k->mac.addr[2],
+			         k->mac.addr[3], k->mac.addr[4], k->mac.addr[5]);
 			break;
 
 		default:
@@ -496,7 +504,7 @@ void net_tx_eth(struct mbuf *m, uint16_t type, struct eth_addr dhost)
 	struct eth_hdr *eth_hdr;
 
 	eth_hdr = mbuf_push_hdr(m, *eth_hdr);
-	eth_hdr->shost = netcfg.mac;
+	eth_hdr->shost = myk()->mac;
 	eth_hdr->dhost = dhost;
 	eth_hdr->type = hton16(type);
 	net_tx_raw(m);
@@ -719,6 +727,7 @@ int net_init_thread(void)
 		return -ENOMEM;
 
 	k->iokernel_softirq = th;
+	memcpy(&k->mac, &netcfg.mac, sizeof(k->mac));
 
 	if (!cfg_directpath_external())
 		tcache_init_perthread(net_tx_buf_tcache, &perthread_get(net_tx_buf_pt));

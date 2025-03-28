@@ -84,6 +84,8 @@ BUILD_ASSERT(RX_CALL_NR < (1ul << IOK2IOK_RAWCMD_BITS));
 // BUILD_ASSERT(TXPKT_NR < (1ul << IOK2IOK_RAWCMD_BITS));
 BUILD_ASSERT(TXCMD_NR < (1ul << IOK2IOK_RAWCMD_BITS));
 
+struct eth_addr pmyiok_mac_arr[MAX_NR_IOK2IOK];
+
 static int epoll_ctl_add(int fd, void *arg)
 {
 	struct epoll_event ev;
@@ -1227,6 +1229,17 @@ static void handle_remove_client_lrpc(int seciok_index, unsigned long payload)
 	RT_BUG_ON(ret != 0);
 }
 
+static void handle_get_mac(int seciok_index)
+{
+	log_info("handle_get_mac: receive IOK2IOK_CMD_GET_MAC from seciok_index=%d",
+	         seciok_index);
+	bool sent = msg_send(&iok_as_primary_cmdq_out[cfg.pmyiok_index][seciok_index], IOK2IOK_CMD_REPLY_MAC, eth_addr_to_uint64(&iok_info->host_mac));
+	if (!sent) {
+		log_err("handle_get_mac: failed to send IOK2IOK_CMD_REPLY_MAC to pmyiok %d", seciok_index);
+		RT_BUG_ON(true);
+	}
+}
+
 static void control_lrpc_loop(void)
 {
 	int i;
@@ -1250,6 +1263,9 @@ static void control_lrpc_loop(void)
 				case IOK2IOK_CMD_BAK_REMOVE_CLIENT:
 				case IOK2IOK_CMD_REMOVE_CLIENT:
 					handle_remove_client_lrpc(i, payload);
+					break;
+				case IOK2IOK_CMD_GET_MAC:
+					handle_get_mac(i);
 					break;
 				default:
 					RT_BUG_ON(true);

@@ -49,10 +49,11 @@ enum {
 	RX_NET_RECV = 0,	/* points to a struct packet */
 	RX_NET_COMPLETE,	/* contains tx_net_hdr.completion_data */
 	RX_REFILL_BUFS,		/* runtime should replenish RX work queues */
+	RX_UPDATE_MAC,	/* update the MAC address of the RX queue */
 	RX_CALL_NR,		/* number of commands */
 };
 
-BUILD_ASSERT(RX_CALL_NR < (1ul << 2ul));
+BUILD_ASSERT(RX_CALL_NR <= (1ul << 2ul));
 
 #define RX_MAKE_CMD(cmd, aux) (((uint64_t) cmd) | (((uint64_t) aux) << 2ul))
 #define RX_GET_CMD(cmd) (cmd & 0x3ul)

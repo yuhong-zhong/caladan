@@ -140,6 +140,32 @@ void dataplane_loop(void)
 		fflush(stdout);
 	}
 
+	if (cfg.is_secondary) {
+		memset(&pmyiok_mac_arr, 0, sizeof(pmyiok_mac_arr));
+
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			bool sent = msg_send(&iok_as_secondary_cmdq_out[i][cfg.seciok_index], IOK2IOK_CMD_GET_MAC, 0);
+			if (!sent) {
+				log_err("main: failed to send IOK2IOK_CMD_GET_MAC to pmyiok %d", i);
+				continue;
+			}
+			msg_out_sync(&iok_as_secondary_cmdq_out[i][cfg.seciok_index]);
+		}
+		sleep(1);
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			uint64_t cmd;
+			unsigned long payload;
+			bool received = msg_recv(&iok_as_secondary_cmdq_in[i][cfg.seciok_index], &cmd, &payload);
+			if (received) {
+				RT_BUG_ON(cmd != IOK2IOK_CMD_REPLY_MAC);
+				uint64_to_eth_addr(payload, &pmyiok_mac_arr[i]);
+				log_info("main: received MAC address from iokernel %d: %02X:%02X:%02X:%02X:%02X:%02X",
+				         i, pmyiok_mac_arr[i].addr[0], pmyiok_mac_arr[i].addr[1], pmyiok_mac_arr[i].addr[2],
+				         pmyiok_mac_arr[i].addr[3], pmyiok_mac_arr[i].addr[4], pmyiok_mac_arr[i].addr[5]);
+			}
+		}
+	}
+
 	/* run until quit or killed */
 	for (;;) {
 		work_done = false;

@@ -22,6 +22,10 @@ net_obj = $(net_src:.c=.o)
 iokernel_src = $(wildcard iokernel/*.c) $(wildcard iokernel/directpath/*.c)
 iokernel_obj = $(iokernel_src:.c=.o)
 
+# host_agent - a host-level agent for the soft-NIC service
+host_agent_src = $(wildcard host_agent/*.c)
+host_agent_obj = $(host_agent_src:.c=.o)
+
 # runtime - a user-level threading and networking library
 runtime_src = $(wildcard runtime/*.c) $(wildcard runtime/net/*.c)
 runtime_src += $(wildcard runtime/net/directpath/*.c)
@@ -44,7 +48,7 @@ DPDK_LIBS=$(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs --static 
 
 
 # must be first
-all: libbase.a libnet.a libruntime.a iokerneld $(test_targets) shim
+all: libbase.a libnet.a libruntime.a iokerneld $(test_targets) shim agent
 
 $(iokernel_obj): INC += -I$(DPDK_PATH)/build/include
 
@@ -66,6 +70,9 @@ iokerneld: $(iokernel_obj) libbase.a libnet.a base/base.ld $(PCM_DEPS)
 	$(LD) $(LDFLAGS) -o $@ $(iokernel_obj) libbase.a libnet.a $(DPDK_LIBS) \
 	$(PCM_DEPS) $(PCM_LIBS) -lpthread -lnuma -ldl
 
+agent: $(host_agent_obj) libbase.a libnet.a base/base.ld
+	$(LD) $(LDFLAGS) -o $@ $(host_agent_obj) libbase.a libnet.a
+
 $(test_targets): $(test_obj) libbase.a libruntime.a libnet.a base/base.ld
 	$(LD) $(FLAGS) $(LDFLAGS) -o $@ $@.o $(RUNTIME_LIBS)
 
@@ -75,7 +82,7 @@ shim:
 .PHONY: shim
 
 # general build rules for all targets
-src = $(base_src) $(net_src) $(runtime_src) $(iokernel_src) $(test_src)
+src = $(base_src) $(net_src) $(runtime_src) $(iokernel_src) $(host_agent_src) $(test_src)
 asm = $(runtime_asm) $(base_asm)
 obj = $(src:.c=.o) $(asm:.S=.o)
 dep = $(obj:.o=.d)
@@ -104,5 +111,5 @@ submodules-clean:
 .PHONY: clean
 clean:
 	rm -f $(obj) $(dep) libbase.a libnet.a libruntime.a \
-	iokerneld $(test_targets)
+	iokerneld $(test_targets) agent
 	$(MAKE) -C shim/ clean

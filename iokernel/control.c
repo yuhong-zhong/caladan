@@ -687,6 +687,43 @@ static void control_seciok_bak_add_client(struct proc *p, int bak_pmyiok_index, 
 	log_info("control_seciok_bak_add_client: bak_pmyiok_index=%d, bak_iok2iok_proc_index=%d", bak_pmyiok_index, bak_iok2iok_proc_index);
 }
 
+static void control_seciok_failover(int fd)
+{
+	uint32_t ip;
+	struct proc *p;
+	ssize_t ret;
+	struct msg_chan_out *chan_out;
+	bool succeed;
+
+	ret = read(fd, &ip, sizeof(ip));
+	if (ret != sizeof(ip)) {
+		log_err("control_seciok_failover: read(ip) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		return;
+	}
+	log_info("control_seciok_failover: ip=%hhu.%hhu.%hhu.%hhu", (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+
+	ret = rte_hash_lookup_data(dp.ip_to_proc, &ip, (void **) &p);
+	if (ret != 0) {
+		log_err("control_seciok_failover: rte_hash_lookup_data() failed, ret=%ld", ret);
+		goto exit;
+	}
+	log_info("control_seciok_failover: found process %d", p->pid);
+
+	chan_out = &iok_as_secondary_cmdq_out[p->cur_pmyiok_index][cfg.seciok_index];
+	succeed = msg_send(chan_out, IOK2IOK_CMD_REMOVE_CLIENT, (unsigned long) p->lrpc_control_fd);
+	RT_BUG_ON(!succeed);
+	iok2iok_proc_as_seciok[p->cur_pmyiok_index][p->iok2iok_index] = NULL;
+
+	if (!lrpc_send(&lrpc_control_to_data, DATAPLANE_FAILOVER, (unsigned long) p)) {
+		log_err("control_seciok_failover: failed to inform dataplane of failover");
+		goto exit;
+	}
+
+exit:
+	close(fd);
+}
+
 static void control_seciok_add_client(void)
 {
 	struct proc *p;
@@ -734,7 +771,11 @@ static void control_seciok_add_client(void)
 			ret, strerror(errno));
 		goto fail;
 	}
-	RT_BUG_ON(socket_command != IOK_REGISTER_REGULAR);
+	RT_BUG_ON(socket_command != IOK_REGISTER_REGULAR && socket_command != IOK_FAILOVER);
+	if (socket_command == IOK_FAILOVER) {
+		control_seciok_failover(fd);
+		return;
+	}
 
 	ret = read(fd, &cur_pmyiok_index, sizeof(cur_pmyiok_index));
 	if (ret != sizeof(cur_pmyiok_index)) {
@@ -833,6 +874,8 @@ static void control_seciok_add_client(void)
 
 	if (bak_pmyiok_index < MAX_NR_IOK2IOK)
 		control_seciok_bak_add_client(p, bak_pmyiok_index, client_cxl_offset, client_cxl_len);
+	else
+		p->bak_pmyiok_index = MAX_NR_IOK2IOK;
 
 	sched_attach_proc(p);
 
@@ -1513,12 +1556,10 @@ int control_init(void)
 	if (epoll_ctl_add(sfd, EPOLL_CONTROLFD_COOKIE))
 		return -1;
 
-	if (!cfg.is_secondary) {
-		ret = control_init_dataplane_comm();
-		if (ret < 0) {
-			log_err("control: cannot initialize communication with dataplane");
-			return ret;
-		}
+	ret = control_init_dataplane_comm();
+	if (ret < 0) {
+		log_err("control: cannot initialize communication with dataplane");
+		return ret;
 	}
 
 	log_info("control: spawning control thread");

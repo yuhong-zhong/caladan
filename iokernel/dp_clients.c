@@ -224,6 +224,26 @@ static void dp_clients_remove_client(struct proc *p)
 	log_info("dp_clients: removed client %d", p->pid);
 }
 
+static void dp_clients_failover(struct proc *p)
+{
+	log_info("dp_clients: failover for client %d", p->pid);
+
+	if (p->bak_pmyiok_index == MAX_NR_IOK2IOK) {
+		log_err("dp_clients: failover for client %d: no backup PMYIOK index", p->pid);
+		return;
+	}
+
+	p->cur_pmyiok_index = p->bak_pmyiok_index;
+	p->lrpc_control_fd = p->bak_lrpc_control_fd;
+	p->iok2iok_index = p->bak_iok2iok_index;
+
+	p->bak_pmyiok_index = MAX_NR_IOK2IOK;
+	p->bak_lrpc_control_fd = -1;
+	p->bak_iok2iok_index = 0;
+
+	log_info("dp_clients: failover for client %d: switched to PMYIOK %d", p->pid, p->cur_pmyiok_index);
+}
+
 /*
  * Process a batch of messages from the control plane.
  */
@@ -241,10 +261,16 @@ void dp_clients_rx_control_lrpcs(void)
 		switch (cmd)
 		{
 		case DATAPLANE_ADD_CLIENT:
+			RT_BUG_ON(cfg.is_secondary);
 			dp_clients_add_client(p);
 			break;
 		case DATAPLANE_REMOVE_CLIENT:
+			RT_BUG_ON(cfg.is_secondary);
 			dp_clients_remove_client(p);
+			break;
+		case DATAPLANE_FAILOVER:
+			RT_BUG_ON(!cfg.is_secondary);
+			dp_clients_failover(p);
 			break;
 		default:
 			log_err("dp_clients: received unrecognized command %lu", cmd);
@@ -262,22 +288,20 @@ int dp_clients_init(void)
 	int ret;
 	struct rte_hash_parameters hash_params = { 0 };
 
-	if (!cfg.is_secondary) {
-		ret = lrpc_init_in(&lrpc_control_to_data,
-			lrpc_control_to_data_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
-			lrpc_control_to_data_params.wb);
-		if (ret < 0) {
-			log_err("dp_clients: initializing LRPC from control plane failed");
-			return -1;
-		}
+	ret = lrpc_init_in(&lrpc_control_to_data,
+		lrpc_control_to_data_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
+		lrpc_control_to_data_params.wb);
+	if (ret < 0) {
+		log_err("dp_clients: initializing LRPC from control plane failed");
+		return -1;
+	}
 
-		ret = lrpc_init_out(&lrpc_data_to_control,
-				lrpc_data_to_control_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
-				lrpc_data_to_control_params.wb);
-		if (ret < 0) {
-			log_err("dp_clients: initializing LRPC to control plane failed");
-			return -1;
-		}
+	ret = lrpc_init_out(&lrpc_data_to_control,
+			lrpc_data_to_control_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
+			lrpc_data_to_control_params.wb);
+	if (ret < 0) {
+		log_err("dp_clients: initializing LRPC to control plane failed");
+		return -1;
 	}
 
 	dp.nr_clients = 0;

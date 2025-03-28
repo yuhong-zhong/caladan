@@ -388,6 +388,10 @@ struct kthread {
 	struct storage_q	storage_q;
 #endif
 
+	/* MAC address */
+	struct eth_addr		mac;
+	unsigned long		pad3[7];
+
 	/* 10th cache-line, statistics counters */
 	uint64_t		stats[STAT_NR];
 };
@@ -401,6 +405,7 @@ BUILD_ASSERT(offsetof(struct kthread, timer_lock) % CACHE_LINE_SIZE == 0);
 #ifdef DIRECT_STORAGE
 BUILD_ASSERT(offsetof(struct kthread, storage_q) % CACHE_LINE_SIZE == 0);
 #endif
+BUILD_ASSERT(offsetof(struct kthread, mac) % CACHE_LINE_SIZE == 0);
 BUILD_ASSERT(offsetof(struct kthread, stats) % CACHE_LINE_SIZE == 0);
 
 DECLARE_PERTHREAD(struct kthread *, mykthread);

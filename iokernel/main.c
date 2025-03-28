@@ -210,7 +210,7 @@ void dataplane_loop(void)
 		work_done |= commands_rx();
 
 		/* handle control messages */
-		if (!cfg.is_secondary && !work_done)
+		if (!work_done)
 			dp_clients_rx_control_lrpcs();
 
 		STAT_INC(LOOPS, 1);

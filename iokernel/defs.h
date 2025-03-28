@@ -347,6 +347,7 @@ extern int data_to_control_efd;
 enum {
 	DATAPLANE_ADD_CLIENT,		/* points to a struct proc */
 	DATAPLANE_REMOVE_CLIENT,	/* points to a struct proc */
+	DATAPLANE_FAILOVER,		/* points to a struct proc */
 	DATAPLANE_NR,			/* number of commands */
 };
 

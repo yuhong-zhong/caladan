@@ -28,6 +28,7 @@
 enum {
 	IOK_REGISTER_REGULAR = 0,
 	IOK_REGISTER_BACKUP,
+	IOK_FAILOVER,
 };
 
 enum {

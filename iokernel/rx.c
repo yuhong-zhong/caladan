@@ -142,6 +142,29 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 			sizeof(*ptr_mac_hdr));
 		dst_ip = rte_be_to_cpu_32(arphdr->arp_data.arp_tip);
 
+		// Broadcast GARP to all runtimes
+		if (rte_is_broadcast_ether_addr(&arphdr->arp_data.arp_tha) && arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY) && dp.nr_clients > 0) {
+			net_hdr = rx_prepend_rx_preamble(buf);
+			rte_mbuf_refcnt_update(buf, dp.nr_clients - 1);
+			bool success;
+			int n_failed = 0;
+			for (int i = 0; i < dp.nr_clients; i++) {
+				success = rx_send_pkt_to_runtime(dp.clients[i], net_hdr);
+				if (!success) {
+					n_failed++;
+					STAT_INC(RX_BROADCAST_FAIL, 1);
+					log_debug_ratelimited("rx: failed to enqueue broadcast GARP"
+					                      "packet to runtime");
+				}
+			}
+			if (n_failed > 0) {
+				uint16_t prev_refcnt = rte_mbuf_refcnt_update(buf, -n_failed);
+				if (prev_refcnt == n_failed)
+					rte_pktmbuf_free(buf);
+			}
+			return;
+		}
+
 		// Azure's faked ARP replies always go to the default NIC
 		// address, so broadcast them to all runtimes.
 		if (cfg.azure_arp_mode &&

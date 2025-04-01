@@ -132,6 +132,28 @@ static void arp_send(uint16_t op, struct eth_addr dhost, uint32_t daddr)
 	if (unlikely(!m))
 		return;
 
+	// log_info("arp: sending ARP packet from [IP %d.%d.%d.%d, MAC %x:%x:%x:%x:%x:%x] to [IP %d.%d.%d.%d, MAC %x:%x:%x:%x:%x:%x]",
+	// 	 ((netcfg.addr >> 24) & 0xff),
+	// 	 ((netcfg.addr >> 16) & 0xff),
+	// 	 ((netcfg.addr >> 8) & 0xff),
+	// 	 (netcfg.addr & 0xff),
+	// 	 netcfg.mac.addr[0],
+	// 	 netcfg.mac.addr[1],
+	// 	 netcfg.mac.addr[2],
+	// 	 netcfg.mac.addr[3],
+	// 	 netcfg.mac.addr[4],
+	// 	 netcfg.mac.addr[5],
+	// 	 ((daddr >> 24) & 0xff),
+	// 	 ((daddr >> 16) & 0xff),
+	// 	 ((daddr >> 8) & 0xff),
+	// 	 (daddr & 0xff),
+	// 	 dhost.addr[0],
+	// 	 dhost.addr[1],
+	// 	 dhost.addr[2],
+	// 	 dhost.addr[3],
+	// 	 dhost.addr[4],
+	// 	 dhost.addr[5]);
+
 	arp_hdr = mbuf_put_hdr(m, *arp_hdr);
 	arp_hdr->htype = hton16(ARP_HTYPE_ETHER);
 	arp_hdr->ptype = hton16(ETHTYPE_IP);
@@ -235,6 +257,9 @@ static void arp_update(uint32_t daddr, struct eth_addr dhost)
 
 		insert_entry(e, idx);
 	} else if (load_acquire(&e->state) == ARP_STATE_STATIC) {
+		// FIXME: allow static entries to be overridden
+		e->eth = dhost;
+
 		spin_unlock_np(&arp_lock);
 		return;
 	}
@@ -280,6 +305,18 @@ void net_rx_arp(struct mbuf *m)
 	sender_ip = ntoh32(arp_hdr_ethip->sender_ip);
 	target_ip = ntoh32(arp_hdr_ethip->target_ip);
 	sender_mac = arp_hdr_ethip->sender_mac;
+
+	// log_info("arp: received ARP packet from [IP %d.%d.%d.%d, MAC %x:%x:%x:%x:%x:%x]",
+	// 	 ((sender_ip >> 24) & 0xff),
+	// 	 ((sender_ip >> 16) & 0xff),
+	// 	 ((sender_ip >> 8) & 0xff),
+	// 	 (sender_ip & 0xff),
+	// 	 sender_mac.addr[0],
+	// 	 sender_mac.addr[1],
+	// 	 sender_mac.addr[2],
+	// 	 sender_mac.addr[3],
+	// 	 sender_mac.addr[4],
+	// 	 sender_mac.addr[5]);
 
 	/* refuse ARP packets with multicast source MAC's */
 	if (eth_addr_is_multicast(&sender_mac))

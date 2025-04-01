@@ -193,7 +193,7 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 		  PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8,
 		  ptr_dst_addr->addr_bytes[0], ptr_dst_addr->addr_bytes[1],
 		  ptr_dst_addr->addr_bytes[2], ptr_dst_addr->addr_bytes[3],
-	  ptr_dst_addr->addr_bytes[4], ptr_dst_addr->addr_bytes[5]);
+		  ptr_dst_addr->addr_bytes[4], ptr_dst_addr->addr_bytes[5]);
 
 	ether_type = rte_be_to_cpu_16(ptr_mac_hdr->ether_type);
 #ifdef NO_CACHE_COHERENCE
@@ -369,7 +369,7 @@ bool rx_burst(void)
 	log_info_duration(nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE));
 	STAT_INC(RX_PULLED, nb_rx);
 	if (nb_rx > 0)
-		log_debug("rx: received %d packets on port %d", nb_rx, dp.port);
+		log_info_ratelimited("rx: received %d packets on port %d", nb_rx, dp.port);
 
 	for (i = 0; i < nb_rx; i++) {
 		// should not prefetch so that the NIC always writes RX packets into main memory

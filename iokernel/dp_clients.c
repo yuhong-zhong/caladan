@@ -14,6 +14,8 @@
 #include <base/log.h>
 #include <base/lrpc.h>
 
+#include <iokernel/queue.h>
+
 #include "defs.h"
 #include "sched.h"
 
@@ -224,7 +226,23 @@ static void dp_clients_remove_client(struct proc *p)
 	log_info("dp_clients: removed client %d", p->pid);
 }
 
-static void dp_clients_failover(struct proc *p)
+static void dp_clients_update_mac(struct proc *p)
+{
+	bool success;
+
+	log_info("dp_clients: update mac for client %d", p->pid);
+	for (uint16_t tid = 0; tid < p->thread_count; tid++) {
+		unsigned long payload = RX_UPDATE_MAC_MAKE_PAYLOAD(eth_addr_to_uint64(&pmyiok_mac_arr[p->cur_pmyiok_index]), (uint64_t) p->cur_pmyiok_index);
+		RT_BUG_ON(RX_UPDATE_MAC_GET_PMYIOK_INDEX(payload) != p->cur_pmyiok_index);
+		RT_BUG_ON(RX_UPDATE_MAC_GET_ETH_ADDR(payload) != eth_addr_to_uint64(&pmyiok_mac_arr[p->cur_pmyiok_index]));
+		success = lrpc_send(&p->threads[tid].rxq, RX_UPDATE_MAC, payload);
+		if (!success) {
+			log_err("dp_clients: failed to update MAC address for thread %d of process %d", tid, p->pid);
+		}
+	}
+}
+
+static void dp_clients_failover(struct proc *p, bool force)
 {
 	log_info("dp_clients: failover for client %d", p->pid);
 
@@ -232,6 +250,15 @@ static void dp_clients_failover(struct proc *p)
 		log_err("dp_clients: failover for client %d: no backup PMYIOK index", p->pid);
 		return;
 	}
+
+	if (p->zombie_pmyiok_index != MAX_NR_IOK2IOK) {
+		log_info("dp_clients: failover for client %d: existing zombie PMYIOK index %d", p->pid, p->zombie_pmyiok_index);
+		return;
+	}
+
+	p->zombie_pmyiok_index = p->cur_pmyiok_index;
+	p->zombie_lrpc_control_fd = p->lrpc_control_fd;
+	p->zombie_iok2iok_index = p->iok2iok_index;
 
 	p->cur_pmyiok_index = p->bak_pmyiok_index;
 	p->lrpc_control_fd = p->bak_lrpc_control_fd;
@@ -241,6 +268,12 @@ static void dp_clients_failover(struct proc *p)
 	p->bak_lrpc_control_fd = -1;
 	p->bak_iok2iok_index = 0;
 
+	if (force) {
+		p->force_failover = true;
+		log_info("dp_clients: failover for client %d: force failover", p->pid);
+	} else {
+		dp_clients_update_mac(p);
+	}
 	log_info("dp_clients: failover for client %d: switched to PMYIOK %d", p->pid, p->cur_pmyiok_index);
 }
 
@@ -269,8 +302,13 @@ void dp_clients_rx_control_lrpcs(void)
 			dp_clients_remove_client(p);
 			break;
 		case DATAPLANE_FAILOVER:
+		case DATAPLANE_FAILOVER_FORCE:
 			RT_BUG_ON(!cfg.is_secondary);
-			dp_clients_failover(p);
+			dp_clients_failover(p, cmd == DATAPLANE_FAILOVER_FORCE);
+			break;
+		case DATAPLANE_UPDATE_MAC:
+			RT_BUG_ON(!cfg.is_secondary);
+			dp_clients_update_mac(p);
 			break;
 		default:
 			log_err("dp_clients: received unrecognized command %lu", cmd);

@@ -34,7 +34,7 @@ static inline uint64_t eth_addr_to_uint64(struct eth_addr *addr)
 	int i;
 
 	for (i = 0; i < ETH_ADDR_LEN; i++)
-		val |= (addr->addr[i] << (i * 8));
+		val |= (((uint64_t) addr->addr[i]) << (i * 8));
 
 	return val;
 }

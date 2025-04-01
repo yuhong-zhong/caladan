@@ -161,6 +161,11 @@ static void arp_send(uint16_t op, struct eth_addr dhost, uint32_t daddr)
 	net_tx_eth(m, ETHTYPE_ARP, dhost);
 }
 
+void arp_send_garp()
+{
+	arp_send(ARP_OP_REPLY, eth_addr_broadcast, netcfg.addr);
+}
+
 static void arp_age_entry(uint64_t now_us, struct arp_entry *e)
 {
 	/* check if this entry has timed out */

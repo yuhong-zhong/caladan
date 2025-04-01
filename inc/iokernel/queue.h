@@ -49,7 +49,7 @@ enum {
 	RX_NET_RECV = 0,	/* points to a struct packet */
 	RX_NET_COMPLETE,	/* contains tx_net_hdr.completion_data */
 	RX_REFILL_BUFS,		/* runtime should replenish RX work queues */
-	RX_UPDATE_MAC,	/* update the MAC address of the RX queue */
+	RX_UPDATE_MAC,		/* update the MAC address of the RX queue */
 	RX_CALL_NR,		/* number of commands */
 };
 
@@ -58,6 +58,10 @@ BUILD_ASSERT(RX_CALL_NR <= (1ul << 2ul));
 #define RX_MAKE_CMD(cmd, aux) (((uint64_t) cmd) | (((uint64_t) aux) << 2ul))
 #define RX_GET_CMD(cmd) (cmd & 0x3ul)
 #define RX_GET_AUX(cmd) (cmd >> 2ul)
+
+#define RX_UPDATE_MAC_MAKE_PAYLOAD(eth_addr, pmyiok_index) (((uint64_t) eth_addr) | (((uint64_t) pmyiok_index) << 48ul))
+#define RX_UPDATE_MAC_GET_ETH_ADDR(payload) (payload & 0xfffffffffffful)
+#define RX_UPDATE_MAC_GET_PMYIOK_INDEX(payload) ((payload >> 48ul) & 0xfffful)
 
 /*
  * TX packet queues: RUNTIMES -> IOKERNEL
@@ -68,6 +72,11 @@ enum {
 	TXPKT_NR,		/* number of commands */
 };
 
+BUILD_ASSERT(TXPKT_NR <= (1ul << 2ul));
+
+#define TXPKT_MAKE_CMD(cmd, aux) (((uint64_t) cmd) | (((uint64_t) aux) << 2ul))
+#define TXPKT_GET_CMD(cmd) (cmd & 0x3ul)
+#define TXPKT_GET_AUX(cmd) (cmd >> 2ul)
 
 /*
  * TX command queues: RUNTIMES -> IOKERNEL

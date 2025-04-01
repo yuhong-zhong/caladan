@@ -687,7 +687,70 @@ static void control_seciok_bak_add_client(struct proc *p, int bak_pmyiok_index, 
 	log_info("control_seciok_bak_add_client: bak_pmyiok_index=%d, bak_iok2iok_proc_index=%d", bak_pmyiok_index, bak_iok2iok_proc_index);
 }
 
-static void control_seciok_failover(int fd)
+static void control_seciok_failover(int fd, bool force)
+{
+	uint32_t ip;
+	struct proc *p;
+	ssize_t ret;
+
+	ret = read(fd, &ip, sizeof(ip));
+	if (ret != sizeof(ip)) {
+		log_err("control_seciok_failover: read(ip) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		return;
+	}
+	log_info("control_seciok_failover: ip=%hhu.%hhu.%hhu.%hhu", (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+	if (force) {
+		log_info("control_seciok_failover: force failover");
+	}
+
+	ret = rte_hash_lookup_data(dp.ip_to_proc, &ip, (void **) &p);
+	if (ret != 0) {
+		log_err("control_seciok_failover: rte_hash_lookup_data() failed, ret=%ld", ret);
+		goto exit;
+	}
+	log_info("control_seciok_failover: found process %d", p->pid);
+
+	if (!lrpc_send(&lrpc_control_to_data, force ? DATAPLANE_FAILOVER_FORCE : DATAPLANE_FAILOVER, (unsigned long) p)) {
+		log_err("control_seciok_failover: failed to inform dataplane of failover");
+		goto exit;
+	}
+
+exit:
+	close(fd);
+}
+
+static void control_seciok_update_mac(int fd)
+{
+	uint32_t ip;
+	struct proc *p;
+	ssize_t ret;
+
+	ret = read(fd, &ip, sizeof(ip));
+	if (ret != sizeof(ip)) {
+		log_err("control_seciok_update_mac: read(ip) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		return;
+	}
+	log_info("control_seciok_update_mac: ip=%hhu.%hhu.%hhu.%hhu", (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+
+	ret = rte_hash_lookup_data(dp.ip_to_proc, &ip, (void **) &p);
+	if (ret != 0) {
+		log_err("control_seciok_update_mac: rte_hash_lookup_data() failed, ret=%ld", ret);
+		goto exit;
+	}
+	log_info("control_seciok_update_mac: found process %d", p->pid);
+
+	if (!lrpc_send(&lrpc_control_to_data, DATAPLANE_UPDATE_MAC, (unsigned long) p)) {
+		log_err("control_seciok_update_mac: failed to inform dataplane of update mac");
+		goto exit;
+	}
+
+exit:
+	close(fd);
+}
+
+static void control_seciok_kill_zombie(int fd)
 {
 	uint32_t ip;
 	struct proc *p;
@@ -697,28 +760,31 @@ static void control_seciok_failover(int fd)
 
 	ret = read(fd, &ip, sizeof(ip));
 	if (ret != sizeof(ip)) {
-		log_err("control_seciok_failover: read(ip) failed, len=%ld [%s]",
+		log_err("control_seciok_kill_zombie: read(ip) failed, len=%ld [%s]",
 			ret, strerror(errno));
 		return;
 	}
-	log_info("control_seciok_failover: ip=%hhu.%hhu.%hhu.%hhu", (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
+	log_info("control_seciok_kill_zombie: ip=%hhu.%hhu.%hhu.%hhu", (ip >> 24) & 0xff, (ip >> 16) & 0xff, (ip >> 8) & 0xff, ip & 0xff);
 
 	ret = rte_hash_lookup_data(dp.ip_to_proc, &ip, (void **) &p);
 	if (ret != 0) {
-		log_err("control_seciok_failover: rte_hash_lookup_data() failed, ret=%ld", ret);
+		log_err("control_seciok_kill_zombie: rte_hash_lookup_data() failed, ret=%ld", ret);
 		goto exit;
 	}
-	log_info("control_seciok_failover: found process %d", p->pid);
+	log_info("control_seciok_kill_zombie: found process %d", p->pid);
 
-	chan_out = &iok_as_secondary_cmdq_out[p->cur_pmyiok_index][cfg.seciok_index];
-	succeed = msg_send(chan_out, IOK2IOK_CMD_REMOVE_CLIENT, (unsigned long) p->lrpc_control_fd);
+	if (p->zombie_pmyiok_index == MAX_NR_IOK2IOK) {
+		log_err("control_seciok_kill_zombie: process %d does not have a zombie PMYIOK", p->pid);
+		goto exit;
+	}
+
+	log_info("control_seciok_kill_zombie: about to send IOK2IOK_CMD_REMOVE_CLIENT to zombie_pmyiok_index=%d", p->zombie_pmyiok_index);
+	chan_out = &iok_as_secondary_cmdq_out[p->zombie_pmyiok_index][cfg.seciok_index];
+	succeed = msg_send(chan_out, IOK2IOK_CMD_REMOVE_CLIENT, (unsigned long) p->zombie_lrpc_control_fd);
 	RT_BUG_ON(!succeed);
-	iok2iok_proc_as_seciok[p->cur_pmyiok_index][p->iok2iok_index] = NULL;
-
-	if (!lrpc_send(&lrpc_control_to_data, DATAPLANE_FAILOVER, (unsigned long) p)) {
-		log_err("control_seciok_failover: failed to inform dataplane of failover");
-		goto exit;
-	}
+	iok2iok_proc_as_seciok[p->zombie_pmyiok_index][p->zombie_iok2iok_index] = NULL;
+	p->zombie_pmyiok_index = MAX_NR_IOK2IOK;
+	p->force_failover = false;
 
 exit:
 	close(fd);
@@ -771,10 +837,22 @@ static void control_seciok_add_client(void)
 			ret, strerror(errno));
 		goto fail;
 	}
-	RT_BUG_ON(socket_command != IOK_REGISTER_REGULAR && socket_command != IOK_FAILOVER);
-	if (socket_command == IOK_FAILOVER) {
-		control_seciok_failover(fd);
+	switch (socket_command) {
+	case IOK_REGISTER_REGULAR:
+		break;
+	case IOK_FAILOVER:
+	case IOK_FAILOVER_FORCE:
+		control_seciok_failover(fd, socket_command == IOK_FAILOVER_FORCE);
 		return;
+	case IOK_UPDATE_MAC:
+		control_seciok_update_mac(fd);
+		return;
+	case IOK_KILL_ZOMBIE:
+		control_seciok_kill_zombie(fd);
+		return;
+	default:
+		log_err("control_seciok_add_client: invalid socket command %d", socket_command);
+		RT_BUG_ON(true);
 	}
 
 	ret = read(fd, &cur_pmyiok_index, sizeof(cur_pmyiok_index));
@@ -871,6 +949,8 @@ static void control_seciok_add_client(void)
 	p->cur_pmyiok_index = cur_pmyiok_index;
 	p->iok2iok_index = iok2iok_proc_index;
 	iok2iok_proc_as_seciok[cur_pmyiok_index][iok2iok_proc_index] = p;
+	p->force_failover = false;
+	p->zombie_pmyiok_index = MAX_NR_IOK2IOK;
 
 	if (bak_pmyiok_index < MAX_NR_IOK2IOK)
 		control_seciok_bak_add_client(p, bak_pmyiok_index, client_cxl_offset, client_cxl_len);
@@ -1276,7 +1356,8 @@ static void handle_get_mac(int seciok_index)
 {
 	log_info("handle_get_mac: receive IOK2IOK_CMD_GET_MAC from seciok_index=%d",
 	         seciok_index);
-	bool sent = msg_send(&iok_as_primary_cmdq_out[cfg.pmyiok_index][seciok_index], IOK2IOK_CMD_REPLY_MAC, eth_addr_to_uint64(&iok_info->host_mac));
+	uint64_t payload = eth_addr_to_uint64(&iok_info->host_mac);
+	bool sent = msg_send(&iok_as_primary_cmdq_out[cfg.pmyiok_index][seciok_index], IOK2IOK_CMD_REPLY_MAC, payload);
 	if (!sent) {
 		log_err("handle_get_mac: failed to send IOK2IOK_CMD_REPLY_MAC to pmyiok %d", seciok_index);
 		RT_BUG_ON(true);

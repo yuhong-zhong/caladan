@@ -27,13 +27,14 @@ static int str_to_ip(const char *str, uint32_t *addr)
 
 int main(int argc, char **argv)
 {
-        if (argc != 3) {
-                log_err("Usage: %s <socket_index> <ip>", argv[0]);
+        if (argc != 4) {
+                log_err("Usage: %s <socket_index> <ip> <0: failover, 1: force failover, 2: update MAC, 3: kill zombie>", argv[0]);
                 return -1;
         }
 
         int socket_index = atoi(argv[1]);
         RT_BUG_ON(socket_index < 0);
+	int command = atoi(argv[3]);
 
         uint32_t ip;
         if (str_to_ip(argv[2], &ip) != 0) {
@@ -42,9 +43,27 @@ int main(int argc, char **argv)
         }
 
 	struct sockaddr_un addr;
-	int socket_command = IOK_FAILOVER;
+	int socket_command;
 	ssize_t ret;
 	int fd;
+
+	switch (command) {
+	case 0:
+		socket_command = IOK_FAILOVER;
+		break;
+	case 1:
+		socket_command = IOK_FAILOVER_FORCE;
+		break;
+	case 2:
+		socket_command = IOK_UPDATE_MAC;
+		break;
+	case 3:
+		socket_command = IOK_KILL_ZOMBIE;
+		break;
+	default:
+		log_err("Invalid command: %d", command);
+		return -1;
+	}
 
 	// Make sure it's an abstract namespace path.
 	assert(CONTROL_SOCK_PATH_PREFIX[0] == '\0');

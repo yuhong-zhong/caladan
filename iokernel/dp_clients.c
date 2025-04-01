@@ -256,6 +256,11 @@ static void dp_clients_failover(struct proc *p, bool force)
 		return;
 	}
 
+	if (force) {
+		// trigger GARP to route traffic to the new PMYIOK with existing MAC address
+		dp_clients_update_mac(p);
+	}
+
 	p->zombie_pmyiok_index = p->cur_pmyiok_index;
 	p->zombie_lrpc_control_fd = p->lrpc_control_fd;
 	p->zombie_iok2iok_index = p->iok2iok_index;

@@ -392,13 +392,13 @@ static int parse_iok_socket_index(const char *name, const char *val)
 
 static int parse_pmyiok_index(const char *name, const char *val)
 {
-	pmyiok_index = atoi(val);
+	cfg_pmyiok_index = atoi(val);
 	return 0;
 }
 
 static int parse_bak_pmyiok_index(const char *name, const char *val)
 {
-	bak_pmyiok_index = atoi(val);
+	cfg_bak_pmyiok_index = atoi(val);
 	return 0;
 }
 
@@ -512,7 +512,8 @@ int cfg_early_load(const char *path)
 	/* log some relevant config parameters */
 	log_info("early_cfg: cxl path: %s", rt_cxl_path);
 	log_info("early_cfg: iok socket index: %d", iok_socket_index);
-	log_info("early_cfg: pmyiok index: %d", pmyiok_index);
+	log_info("early_cfg: pmyiok index: %d", cfg_pmyiok_index);
+	log_info("early_cfg: bak pmyiok index: %d", cfg_bak_pmyiok_index);
 #ifdef NO_SCHED
 	bitmap_for_each_set(rt_cores, NCPU, i) {
 		log_info("early_cfg: core %d", i);

@@ -194,8 +194,8 @@ stack_init_to_rsp_with_buf(struct stack *s, void **buf, size_t buf_len,
 
 extern const char *rt_cxl_path;
 extern int iok_socket_index;
-extern int pmyiok_index;
-extern int bak_pmyiok_index;
+extern int cfg_pmyiok_index;
+extern int cfg_bak_pmyiok_index;
 
 struct iokernel_control {
 	int fd;
@@ -388,9 +388,10 @@ struct kthread {
 	struct storage_q	storage_q;
 #endif
 
-	/* MAC address */
+	/* MAC address and pmyiok index */
 	struct eth_addr		mac;
-	unsigned long		pad3[7];
+	int			pmyiok_index;
+	unsigned long		pad3[6];
 
 	/* 10th cache-line, statistics counters */
 	uint64_t		stats[STAT_NR];

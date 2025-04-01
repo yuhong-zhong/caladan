@@ -262,13 +262,15 @@ bool tx_drain_completions(void)
 }
 
 static int tx_drain_queue(struct thread *t, int n,
-			  struct tx_net_hdr **hdrs)
+			  struct tx_net_hdr **hdrs, int *proc_pmyiok_indices)
 {
 	int i;
 
 	for (i = 0; i < n; i++) {
 		uint64_t cmd;
 		unsigned long payload;
+		uint64_t txpkt_cmd;
+		uint32_t aux;
 
 		if (!lrpc_recv(&t->txpktq, &cmd, &payload)) {
 			if (unlikely(!t->active))
@@ -276,8 +278,12 @@ static int tx_drain_queue(struct thread *t, int n,
 			break;
 		}
 
+		txpkt_cmd = TXPKT_GET_CMD(cmd);
+		aux = TXPKT_GET_AUX(cmd);
+
 		/* TODO: need to kill the process? */
-		BUG_ON(cmd != TXPKT_NET_XMIT);
+		BUG_ON(txpkt_cmd != TXPKT_NET_XMIT);
+		proc_pmyiok_indices[i] = (int) aux;
 
 		hdrs[i] = shmptr_to_ptr(&t->p->region, payload,
 					sizeof(struct tx_net_hdr));
@@ -377,7 +383,7 @@ bool tx_burst(void)
 		unsigned int idx = (pos + i) % nrts;
 		t = ts[idx];
 		ret = tx_drain_queue(t, IOKERNEL_TX_BURST_SIZE - n_pkts,
-				     &hdrs[n_pkts]);
+				     &hdrs[n_pkts], &proc_pmyiok_indices[n_pkts]);
 		for (j = n_pkts; j < n_pkts + ret; j++) {
 			threads[j] = t;
 			procs[j] = t->p;
@@ -385,7 +391,8 @@ bool tx_burst(void)
 			if (!cfg.is_secondary) {
 				lens[j] = hdrs[j]->len;
 				olflags[j] = hdrs[j]->olflags;
-			} else {
+			} else if (procs[j]->force_failover) {
+				// override the pmyiok index to the current pmyiok index
 				proc_pmyiok_indices[j] = t->p->cur_pmyiok_index;
 			}
 		}

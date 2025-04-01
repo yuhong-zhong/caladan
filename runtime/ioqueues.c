@@ -36,8 +36,8 @@
 
 const char *rt_cxl_path = NULL;
 int iok_socket_index = 0;
-int pmyiok_index = 0;
-int bak_pmyiok_index = MAX_NR_IOK2IOK;
+int cfg_pmyiok_index = 0;
+int cfg_bak_pmyiok_index = MAX_NR_IOK2IOK;
 
 static size_t lrpc_q_size(void)
 {
@@ -243,16 +243,16 @@ int ioqueues_init_early(void)
 		RT_BUG_ON(true);
 	}
 
-	ret = write(iok.fd, &pmyiok_index, sizeof(pmyiok_index));
-	if (ret != sizeof(pmyiok_index)) {
-		log_err("ioqueues_init_early: write(pmyiok_index) failed, len=%ld [%s]",
+	ret = write(iok.fd, &cfg_pmyiok_index, sizeof(cfg_pmyiok_index));
+	if (ret != sizeof(cfg_pmyiok_index)) {
+		log_err("ioqueues_init_early: write(cfg_pmyiok_index) failed, len=%ld [%s]",
 			ret, strerror(errno));
 		RT_BUG_ON(true);
 	}
 
-	ret = write(iok.fd, &bak_pmyiok_index, sizeof(bak_pmyiok_index));
-	if (ret != sizeof(bak_pmyiok_index)) {
-		log_err("ioqueues_init_early: write(bak_pmyiok_index) failed, len=%ld [%s]",
+	ret = write(iok.fd, &cfg_bak_pmyiok_index, sizeof(cfg_bak_pmyiok_index));
+	if (ret != sizeof(cfg_bak_pmyiok_index)) {
+		log_err("ioqueues_init_early: write(cfg_bak_pmyiok_index) failed, len=%ld [%s]",
 			ret, strerror(errno));
 		RT_BUG_ON(true);
 	}

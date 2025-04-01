@@ -251,9 +251,16 @@ static void net_rx_one(struct mbuf *m)
 
 	/* filter out requests we can't handle */
 	BUILD_ASSERT(sizeof(llhdr->dhost.addr) == sizeof(k->mac.addr));
-	if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP ||
-		     memcmp(llhdr->dhost.addr, k->mac.addr,
-			    sizeof(llhdr->dhost.addr)) != 0)) {
+	// if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP ||
+	// 	     memcmp(llhdr->dhost.addr, k->mac.addr,
+	// 		    sizeof(llhdr->dhost.addr)) != 0)) {
+	// 	log_err_ratelimited("net: dropping unsupported packet, type %x",
+	// 			    ntoh16(llhdr->type));
+	// 	goto drop;
+	// }
+
+	// FIXME: temporary hack to allow all packets
+	if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP)) {
 		log_err_ratelimited("net: dropping unsupported packet, type %x",
 				    ntoh16(llhdr->type));
 		goto drop;
@@ -370,10 +377,13 @@ static void iokernel_softirq_poll(struct kthread *k)
 			break;
 
 		case RX_UPDATE_MAC:
-			uint64_to_eth_addr(payload, &k->mac);
+			uint64_to_eth_addr(RX_UPDATE_MAC_GET_ETH_ADDR(payload), &k->mac);
+			k->pmyiok_index = RX_UPDATE_MAC_GET_PMYIOK_INDEX(payload);
 			log_info("net: updated MAC address to %02X:%02X:%02X:%02X:%02X:%02X",
 			         k->mac.addr[0], k->mac.addr[1], k->mac.addr[2],
 			         k->mac.addr[3], k->mac.addr[4], k->mac.addr[5]);
+			log_info("net: updated pmyiok index to %d", k->pmyiok_index);
+			arp_send_garp();
 			break;
 
 		default:
@@ -521,7 +531,7 @@ static int net_tx_iokernel(struct mbuf *m)
 	RT_BUG_ON(len >= (1u << 16u));
 	RT_BUG_ON(hdr->olflags >= (1u << 15u));
 
-	if (unlikely(!lrpc_send(&k->txpktq, TXPKT_NET_XMIT, shm))) {
+	if (unlikely(!lrpc_send(&k->txpktq, TXPKT_MAKE_CMD(TXPKT_NET_XMIT, k->pmyiok_index), shm))) {
 		log_warn_ratelimited("tx: failed to send to iokernel");
 		mbuf_pull_hdr(m, *hdr);
 		return -1;
@@ -799,6 +809,7 @@ int net_init_thread(void)
 
 	k->iokernel_softirq = th;
 	memcpy(&k->mac, &netcfg.mac, sizeof(k->mac));
+	k->pmyiok_index = cfg_pmyiok_index;
 
 	tcache_init_perthread(mbuf_tcache, &perthread_get(mbuf_pt));
 

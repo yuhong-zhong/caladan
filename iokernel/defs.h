@@ -208,6 +208,7 @@ struct proc {
 	uint16_t 	dp_clients_idx;
 	uint16_t 	iok2iok_index;
 	uint16_t 	bak_iok2iok_index;
+	volatile uint16_t zombie_iok2iok_index;
 	uint16_t	uniqid;
 
 	/* network data */
@@ -231,12 +232,15 @@ struct proc {
 	int				control_fd;
 	int			lrpc_control_fd;
 	int			bak_lrpc_control_fd;
+	volatile int		zombie_lrpc_control_fd;
 	pid_t			pid;
 
 	int			seciok_index;
 
-	volatile int		cur_pmyiok_index;
-	volatile int		bak_pmyiok_index;
+	int		cur_pmyiok_index;
+	int		bak_pmyiok_index;
+	volatile int	zombie_pmyiok_index;
+	volatile bool	force_failover;
 
 	/* table of physical addresses for shared memory */
 	physaddr_t		page_paddrs[];
@@ -348,6 +352,8 @@ enum {
 	DATAPLANE_ADD_CLIENT,		/* points to a struct proc */
 	DATAPLANE_REMOVE_CLIENT,	/* points to a struct proc */
 	DATAPLANE_FAILOVER,		/* points to a struct proc */
+	DATAPLANE_FAILOVER_FORCE,	/* points to a struct proc */
+	DATAPLANE_UPDATE_MAC,		/* points to a struct proc */
 	DATAPLANE_NR,			/* number of commands */
 };
 

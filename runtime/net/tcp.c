@@ -697,6 +697,13 @@ static int __tcp_dial(struct netaddr laddr, struct netaddr raddr,
 	tcp_conn_get(c); /* take a ref for the state machine */
 	tcp_conn_set_state(c, TCP_STATE_SYN_SENT);
 
+	// log_info("tcp_dial: SYN sent to IP %hhu.%hhu.%hhu.%hhu at port %u",
+	// 	 (raddr.ip >> 24) & 0xff,
+	// 	 (raddr.ip >> 16) & 0xff,
+	// 	 (raddr.ip >> 8) & 0xff,
+	// 	 raddr.ip & 0xff,
+	// 	 raddr.port);
+
 	if (c->nonblocking) {
 		spin_unlock_np(&c->lock);
 		*c_out = c;

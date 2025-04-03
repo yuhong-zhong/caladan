@@ -299,6 +299,10 @@ fn run_memcached_preload(
                         println!("preload receive ({}/{}): {}", n, perthread, e);
                         return false;
                     }
+
+                    if n % 1000 == 0 {
+                        println!("Preload progress: ({}/{}) thread {}", n, perthread, i);
+                    }
                 }
                 true
             })
@@ -495,13 +499,21 @@ fn process_result_final(
     }
 
     println!(
-        "{}, {}, {}, {}, {}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {}, {}",
+        "{}, {}, {}, {}, {}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {}, {}",
         sched.service.name(),
         (packet_count + drop_count) as u64 * 1000_000_000 / duration_to_ns(last_send - first_send),
         packet_count as u64 * 1000_000_000 / duration_to_ns(last_send - first_send),
         drop_count,
         never_sent_count,
+        percentile(0.0),
+        percentile(10.0),
+        percentile(20.0),
+        percentile(30.0),
+        percentile(40.0),
         percentile(50.0),
+        percentile(60.0),
+        percentile(70.0),
+        percentile(80.0),
         percentile(90.0),
         percentile(99.0),
         percentile(99.9),

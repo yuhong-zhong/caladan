@@ -40,7 +40,7 @@ use backend::*;
 mod lockstep;
 
 mod payload;
-use payload::{Payload, SyntheticProtocol, PAYLOAD_SIZE};
+use payload::{Payload, SyntheticProtocol, MAX_TOTAL_SIZE, PAYLOAD_SIZE};
 
 #[derive(Default)]
 pub struct Packet {
@@ -242,7 +242,7 @@ fn run_spawner_server(addr: SocketAddrV4, workerspec: &str) {
             let worker = SPAWNER_WORKER.as_ref().unwrap();
             worker.work(payload.work_iterations, payload.randomness);
             payload.randomness = shenango::rdtsc();
-            let mut array = ArrayVec::<_, PAYLOAD_SIZE>::new();
+            let mut array = ArrayVec::<_, MAX_TOTAL_SIZE>::new();
             payload.serialize_into(&mut array).unwrap();
             let _ = UdpSpawner::reply(d, array.as_slice());
             UdpSpawner::release_data(d);
@@ -298,6 +298,10 @@ fn run_memcached_preload(
                     if let Err(e) = proto.read_response(&sock1, &mut buf) {
                         println!("preload receive ({}/{}): {}", n, perthread, e);
                         return false;
+                    }
+
+                    if n % 1000 == 0 {
+                        println!("Preload progress: ({}/{}) thread {}", n, perthread, i);
                     }
                 }
                 true
@@ -495,13 +499,21 @@ fn process_result_final(
     }
 
     println!(
-        "{}, {}, {}, {}, {}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {}, {}",
+        "{}, {}, {}, {}, {}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {:.1}, {}, {}",
         sched.service.name(),
         (packet_count + drop_count) as u64 * 1000_000_000 / duration_to_ns(last_send - first_send),
         packet_count as u64 * 1000_000_000 / duration_to_ns(last_send - first_send),
         drop_count,
         never_sent_count,
+        percentile(0.0),
+        percentile(10.0),
+        percentile(20.0),
+        percentile(30.0),
+        percentile(40.0),
         percentile(50.0),
+        percentile(60.0),
+        percentile(70.0),
+        percentile(80.0),
         percentile(90.0),
         percentile(99.0),
         percentile(99.9),
@@ -564,9 +576,14 @@ fn process_result(sched: &RequestSchedule, packets: &mut [Packet]) -> Option<Sch
             (None, _) => never_sent += 1,
             (_, None) => dropped += 1,
             (Some(ref start), Some(ref end)) => {
-                *latencies
-                    .entry(duration_to_ns(*end - *start) / 1000)
-                    .or_insert(0) += 1
+                if *end <= *start {
+                    println!("End before start");
+                    dropped += 1;
+                } else {
+                    *latencies
+                        .entry(duration_to_ns(*end - *start) / 1000)
+                        .or_insert(0) += 1;
+                }
             }
         }
     }
@@ -657,7 +674,7 @@ fn run_client_worker(
     index: usize,
     live_mode_socket: Option<Arc<Connection>>,
 ) -> Vec<Option<ScheduleResult>> {
-    let mut payload = Vec::with_capacity(4096);
+    let mut payload = Vec::with_capacity(MAX_TOTAL_SIZE);
     let (mut packets, sched_boundaries) = gen_packets_for_schedule(&schedules);
     let src_addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), (100 + index) as u16);
     let live_mode = live_mode_socket.is_some();
@@ -674,7 +691,7 @@ fn run_client_worker(
     let rproto = proto.clone();
     let wg2 = wg.clone();
     let receive_thread = backend.spawn_thread(move || {
-        let mut recv_buf = vec![0; 4096];
+        let mut recv_buf = vec![0; MAX_TOTAL_SIZE];
         let mut receive_times = vec![None; packets_per_thread];
         let mut buf = Buffer::new(&mut recv_buf);
         let use_ordering = rproto.uses_ordered_requests();
@@ -684,6 +701,10 @@ fn run_client_worker(
                 Ok((mut idx, tsc)) => {
                     if use_ordering {
                         idx = i;
+                    }
+                    if (idx as usize) >= receive_times.len() {
+                        println!("Received out-of-bounds index {}", idx);
+                        continue;
                     }
                     receive_times[idx] = Some((Instant::now(), tsc));
                 }
@@ -874,6 +895,121 @@ fn run_live_client(
             .into_iter()
             .all(|p| p);
     }
+}
+
+fn run_closed_loop_worker(
+    proto: Arc<Box<dyn LoadgenProtocol>>,
+    backend: Backend,
+    addr: SocketAddrV4,
+    tport: Transport,
+    wg: shenango::WaitGroup,
+    wg_start: shenango::WaitGroup,
+    depth: usize,
+    start: Instant,
+    end_time: Arc<AtomicUsize>,
+) -> usize {
+    let mut payload = Vec::with_capacity(4096);
+    let src_addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), 0);
+    let mut socket = match tport {
+        Transport::Tcp => backend.create_tcp_connection(Some(src_addr), addr).unwrap(),
+        Transport::Udp => backend.create_udp_connection(src_addr, Some(addr)).unwrap(),
+    };
+
+    let mut recv_buf = vec![0; 4096];
+    let mut buf = Buffer::new(&mut recv_buf);
+
+    wg.done();
+    wg_start.wait();
+
+    // Note all packets are the same.
+    let p = Packet::default();
+    proto.gen_req(0, &p, &mut payload);
+
+    let mut cnt = 0;
+    let mut outstanding = 0;
+
+    let done = || {
+        return (start.elapsed().as_micros() as usize) >= end_time.load(Ordering::Relaxed);
+    };
+
+    loop {
+        while outstanding < depth && !done() {
+            socket.write_all(&payload[..]).unwrap();
+            outstanding += 1;
+        }
+
+        if done() {
+            return cnt;
+        }
+
+        match proto.read_response(&socket, &mut buf) {
+            Ok(_) => {
+                if done() {
+                    return cnt;
+                }
+                cnt += 1;
+                outstanding -= 1;
+            }
+            Err(e) => {
+                panic!("Receive thread: {} host {}", e, addr);
+            }
+        }
+    }
+}
+
+fn run_closed_loop_client(
+    proto: Arc<Box<dyn LoadgenProtocol>>,
+    backend: Backend,
+    addrs: &Vec<SocketAddrV4>,
+    conns_per_addr: usize,
+    tport: Transport,
+    barrier_group: &mut Option<lockstep::Group>,
+    depth: usize,
+    runtime: Duration,
+) -> bool {
+    let wg = shenango::WaitGroup::new();
+    wg.add((conns_per_addr * addrs.len()) as i32);
+    let wg_start = shenango::WaitGroup::new();
+    wg_start.add(1);
+
+    let end_time = Arc::new(AtomicUsize::new(usize::MAX));
+
+    let start = Instant::now();
+
+    let conn_threads: Vec<_> = addrs
+        .clone()
+        .iter()
+        .flat_map(|addr| {
+            (0..conns_per_addr).map(|_| {
+                let proto = proto.clone();
+                let wg = wg.clone();
+                let wg_start = wg_start.clone();
+                let end_time = end_time.clone();
+                let addr = addr.clone();
+                backend.spawn_thread(move || {
+                    run_closed_loop_worker(
+                        proto, backend, addr, tport, wg, wg_start, depth, start, end_time,
+                    )
+                })
+            })
+        })
+        .collect();
+
+    wg.wait();
+
+    if let Some(ref mut g) = *barrier_group {
+        g.barrier();
+    }
+
+    end_time.store(
+        (start.elapsed() + runtime).as_micros() as usize,
+        Ordering::SeqCst,
+    );
+    wg_start.done();
+
+    let total_requests: usize = conn_threads.into_iter().map(|s| s.join().unwrap()).sum();
+    println!("RPS: {}", total_requests as u64 / runtime.as_secs());
+    true
 }
 
 fn run_client(
@@ -1238,6 +1374,19 @@ fn main() {
                 .help("run live mode"),
         )
         .arg(
+            Arg::with_name("closed_bench")
+                .long("closed_bench")
+                .takes_value(false)
+                .help("used close loop tput benchmark routine"),
+        )
+        .arg(
+            Arg::with_name("depth")
+                .long("depth")
+                .takes_value(true)
+                .default_value("1")
+                .help("depth for closed loop benchmark"),
+        )
+        .arg(
             Arg::with_name("intersample_sleep")
                 .long("intersample_sleep")
                 .takes_value(true)
@@ -1266,6 +1415,8 @@ fn main() {
     let config = matches.value_of("config");
     let dowarmup = matches.is_present("warmup");
     let live_mode = matches.is_present("live");
+    let closed_bench = matches.is_present("closed_bench");
+    let depth = value_t_or_exit!(matches, "depth", usize);
 
     let distspec = match matches.is_present("distspec") {
         true => value_t_or_exit!(matches, "distspec", String),
@@ -1399,20 +1550,21 @@ fn main() {
             backend.init_and_run(config, move || {
 
                 let mut barrier_group = match (matches.is_present("leader"), matches.value_of("leader-ip")) {
-			(true, _) => {
-				let addr =  SocketAddrV4::new(FromStr::from_str("0.0.0.0").unwrap(), 23232);
-				let npeers = value_t_or_exit!(matches, "barrier-peers", usize);
-				Some(lockstep::Group::new_server(npeers - 1, addr, backend.clone()).unwrap())
-			},
-			(_, Some(ipstr)) => {
-				let addr = SocketAddrV4::new(FromStr::from_str(ipstr).unwrap(), 23232);
-				Some(lockstep::Group::new_client(addr, backend.clone()).unwrap())
-			}
-			(_, _) => None,
-		};
+                    (true, _) => {
+                        let addr =  SocketAddrV4::new(FromStr::from_str("0.0.0.0").unwrap(), 23232);
+                        let npeers = value_t_or_exit!(matches, "barrier-peers", usize);
+                        Some(lockstep::Group::new_server(npeers - 1, addr, backend.clone()).unwrap())
+                    },
+                    (_, Some(ipstr)) => {
+                        let addr = SocketAddrV4::new(FromStr::from_str(ipstr).unwrap(), 23232);
+                        Some(lockstep::Group::new_client(addr, backend.clone()).unwrap())
+                    }
+                    (_, _) => None,
+                };
 
-                if !live_mode {
-                    println!("Distribution, Target, Actual, Dropped, Never Sent, Median, 90th, 99th, 99.9th, 99.99th, Start, StartTsc");
+                if closed_bench {
+                    run_closed_loop_client(proto, backend, &addrs, nthreads, tport, &mut barrier_group, depth, runtime);
+                    return;
                 }
                 match (matches.value_of("protocol").unwrap(), &barrier_group) {
                     (_, Some(lockstep::Group::Client(ref _c))) => (),
@@ -1443,6 +1595,8 @@ fn main() {
                     unreachable!();
                 }
 
+                println!("Distribution, Target, Actual, Dropped, Never Sent, Median, 90th, 99th, 99.9th, 99.99th, Start, StartTsc");
+
                 if !loadshift_spec.is_empty() {
                     let sched = gen_loadshift_experiment(&loadshift_spec, distribution, nthreads, output);
                     run_client(
@@ -1464,15 +1618,15 @@ fn main() {
                 if dowarmup {
                     // Run at full pps 3 times for 20 seconds
                     for _ in 0..1 {
-                    let sched = gen_classic_packet_schedule(
-                        Duration::from_secs(1),
-                        (0.75 * (packets_per_second as f64)) as usize,
-                        OutputMode::Silent,
-                        distribution,
-                        20,
-                        nthreads,
-                        discard_pct,
-                    );
+                        let sched = gen_classic_packet_schedule(
+                            Duration::from_secs(1),
+                            (0.75 * (packets_per_second as f64)) as usize,
+                            OutputMode::Silent,
+                            distribution,
+                            20,
+                            nthreads,
+                            discard_pct,
+                        );
                         run_client(
                             proto.clone(),
                             backend,

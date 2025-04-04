@@ -263,7 +263,7 @@ full:
 
 	/* allocate mbufs */
 	if (n_pkts - n_bufs > 0) {
-		log_info_throughput(ret = rte_mempool_get_bulk(tx_mbuf_pool, (void **)&bufs[n_bufs], n_pkts - n_bufs), ret);
+		ret = rte_mempool_get_bulk(tx_mbuf_pool, (void **)&bufs[n_bufs], n_pkts - n_bufs);
 		if (unlikely(ret)) {
 			stats[TX_COMPLETION_FAIL] += n_pkts - n_bufs;
 			log_warn_ratelimited("tx: error getting %d mbufs from mempool", n_pkts - n_bufs);
@@ -281,7 +281,7 @@ full:
 	n_bufs = n_pkts;
 
 	/* finally, send the packets on the wire */
-	ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts);
+	log_info_throughput(ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts), ret);
 	log_debug("tx: transmitted %d packets on port %d", ret, dp.port);
 
 	/* apply back pressure if the NIC TX ring was full */

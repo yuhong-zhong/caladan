@@ -221,6 +221,7 @@ static void dp_clients_remove_client(struct proc *p)
 		directpath_dataplane_notify_kill(p);
 	if (!p->is_remote)
 		sched_detach_proc(p);
+	log_info("dp_clients: remaining refcnt for client %d = %d", p->pid, p->ref.cnt);
 	proc_put(p);
 
 	log_info("dp_clients: removed client %d", p->pid);

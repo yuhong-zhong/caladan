@@ -314,21 +314,21 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_inde
 
 		rss = IOK2IOK_RXPKT_GET_RSS(payload);
 
-		// if (p->cur_pmyiok_index == pmyiok_index) {
-		// 	success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
-		// 	if (!success) {
-		// 		log_warn_ratelimited("rx: failed to send packet to runtime");
-		// 	}
-		// } else {
-		// 	// reject packets from backup pmyiok
-		// 	success = false;
-		// }
-
-		// FIXME: temporarily allow packets from any pmyiok
-		success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
-		if (!success) {
-			log_warn_ratelimited("rx: failed to send packet to runtime");
+		if (p->cur_pmyiok_index == pmyiok_index || p->zombie_pmyiok_index == pmyiok_index) {
+			success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+			if (!success) {
+				log_warn_ratelimited("rx: failed to send packet to runtime");
+			}
+		} else {
+			// reject packets from other pmyioks
+			success = false;
 		}
+
+		// // FIXME: temporarily allow packets from any pmyiok
+		// success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+		// if (!success) {
+		// 	log_warn_ratelimited("rx: failed to send packet to runtime");
+		// }
 
 		if (!success) {
 			shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
@@ -366,10 +366,10 @@ bool rx_burst(void)
 	}
 
 	/* retrieve packets from NIC queue */
-	log_info_duration(nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE));
+	log_info_throughput(nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE), nb_rx);
 	STAT_INC(RX_PULLED, nb_rx);
 	if (nb_rx > 0)
-		log_info_ratelimited("rx: received %d packets on port %d", nb_rx, dp.port);
+		log_debug_ratelimited("rx: received %d packets on port %d", nb_rx, dp.port);
 
 	for (i = 0; i < nb_rx; i++) {
 		// should not prefetch so that the NIC always writes RX packets into main memory

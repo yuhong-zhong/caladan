@@ -170,6 +170,30 @@ enum {
 	}						\
 })
 
+#define log_throughput(level, func, var)		\
+({							\
+	static uint64_t __duration_last_ns = 0;		\
+	static uint64_t __duration_count = 0;		\
+	static uint64_t __val_sum = 0;			\
+	static uint64_t __duration_sum = 0;		\
+	volatile uint64_t __duration_start_ns = nanotime(); \
+	func;						\
+	__val_sum += var;			\
+	volatile uint64_t __duration_end_ns = nanotime(); \
+	uint64_t __duration_ns = __duration_end_ns - __duration_start_ns; \
+	__duration_count++;				\
+	__duration_sum += __duration_ns;		\
+	if (__duration_end_ns - __duration_last_ns >= ONE_SECOND * 2000) { \
+		logk(level, "%s:%d\t[%s()]\tthroughput %ld/s\tcalled %ld/s\tduration %ld ns", \
+			__FILE__, __LINE__, __func__, __val_sum * ONE_SECOND * 1000ul / (__duration_end_ns - __duration_last_ns), \
+			__duration_count * ONE_SECOND * 1000ul / (__duration_end_ns - __duration_last_ns), (__duration_sum / __duration_count)); \
+		__val_sum = 0;				\
+		__duration_count = 0;			\
+		__duration_sum = 0;			\
+		__duration_last_ns = __duration_end_ns;	\
+	}						\
+})
+
 #undef log_info_callrate
 #define log_info_callrate() do {} while (0)
 
@@ -177,3 +201,6 @@ enum {
 
 #define log_info_duration(func) \
 	log_duration(LOG_INFO, func)
+
+#define log_info_throughput(func, var) \
+	log_throughput(LOG_INFO, func, var)

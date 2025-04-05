@@ -256,7 +256,7 @@ static void net_rx_one(struct mbuf *m)
 	}
 	len = ntoh16(iphdr->len) - sizeof(*iphdr);
 	if (unlikely(mbuf_length(m) < len)) {
-		log_err_ratelimited("net: IP packet size does not match header");
+		log_err_ratelimited("net: IP packet size does not match header: len %d, mbuf_length %d", len, mbuf_length(m));
 		goto drop;
 	}
 	if (len < mbuf_length(m))

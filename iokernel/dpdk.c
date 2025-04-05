@@ -41,6 +41,7 @@
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_lcore.h>
+#include <rte_pdump.h>
 
 #include <base/log.h>
 
@@ -298,6 +299,10 @@ int dpdk_init(void)
 
 	if (rte_lcore_count() > 1)
 		log_warn("dpdk: too many lcores enabled, only 1 used");
+
+	// TODO: enable pdump
+	// ret = rte_pdump_init();
+	// RT_BUG_ON(ret < 0);
 
 	return 0;
 }

@@ -45,11 +45,8 @@ impl LoadgenProtocol for SyntheticProtocol {
 
     fn read_response(&self, mut sock: &Connection, buf: &mut Buffer) -> io::Result<(usize, u64)> {
         let scratch = buf.get_empty_buf();
-        sock.read_exact(&mut scratch[..PAYLOAD_SIZE])?;
+        sock.read_exact(&mut scratch[..(PAYLOAD_SIZE + self.extra_payload_size as usize)])?;
         let payload = Payload::deserialize(&mut &scratch[..])?;
-        if payload.extra_payload_size > 0 {
-            sock.read_exact(&mut scratch[PAYLOAD_SIZE..(PAYLOAD_SIZE + payload.extra_payload_size as usize)])?;
-        }
         Ok((payload.index as usize, payload.randomness))
     }
 }

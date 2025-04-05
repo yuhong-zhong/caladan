@@ -458,7 +458,7 @@ full:
 	n_bufs = n_pkts;
 
 	/* finally, send the packets on the wire */
-	log_info_duration(ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts));
+	log_info_throughput(ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts), ret);
 	log_debug("tx: transmitted %d packets on port %d", ret, dp.port);
 
 	/* apply back pressure if the NIC TX ring was full */

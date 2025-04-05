@@ -193,10 +193,13 @@ fn run_linux_udp_server(
 }
 
 fn socket_worker(socket: &mut Connection, worker: Arc<FakeWorker>) {
-    let mut v = vec![0; PAYLOAD_SIZE];
+    let mut v = vec![0; MAX_TOTAL_SIZE];
     let mut r = || {
         socket.read_exact(&mut v[..PAYLOAD_SIZE])?;
         let mut payload = Payload::deserialize(&mut &v[..PAYLOAD_SIZE])?;
+        if payload.extra_payload_size > 0 {
+            socket.read_exact(&mut v[PAYLOAD_SIZE..PAYLOAD_SIZE + payload.extra_payload_size as usize])?;
+        }
         v.clear();
         worker.work(payload.work_iterations, payload.randomness);
         payload.randomness = shenango::rdtsc();

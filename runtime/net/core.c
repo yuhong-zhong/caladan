@@ -181,8 +181,6 @@ static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 	mbuf_init(m, buf, len, 0);
 	m->len = len;
 	m->csum_type = csum_type;
-	m->csum = 0;
-	m->rss_hash = rss_hash;
 
 	m->release = (void (*)(struct mbuf *))sfree;
 

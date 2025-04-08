@@ -194,6 +194,16 @@ enum {
 	}						\
 })
 
+#define call_every_n_seconds(func, n)			\
+({							\
+	static uint64_t __last_us = 0;			\
+	uint64_t __cur_us = microtime();		\
+	if (__cur_us - __last_us >= ONE_SECOND * (n)) {	\
+		func;					\
+		__last_us = __cur_us;			\
+	}						\
+})
+
 #undef log_info_callrate
 #define log_info_callrate() do {} while (0)
 

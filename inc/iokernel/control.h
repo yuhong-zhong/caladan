@@ -48,7 +48,7 @@ enum {
 #define IOK2IOK_CMD_SHM_SIZE	(ROUND_UP(IOK2IOK_CMD_QUEUE_SIZE * sizeof(struct lrpc_msg), PGSIZE_2MB))
 #define IOK2IOK_TOTAL_SHM_SIZE	(4UL * IOK2IOK_DP_SHM_SIZE + 2UL * IOK2IOK_CMD_SHM_SIZE)
 
-#define MAX_NR_IOK2IOK		2UL
+#define MAX_NR_IOK2IOK		1UL
 
 // The iok2iok QP head pointers of a pmyiok must fit in a 2MB page
 BUILD_ASSERT(MAX_NR_IOK2IOK * 6 * CACHE_LINE_SIZE <= PGSIZE_2MB);
@@ -99,6 +99,17 @@ enum {
 #define IOK2IOK_GET_RAWCMD(cmd) ((cmd) & ((1ul << IOK2IOK_RAWCMD_BITS) - 1ul))
 #define IOK2IOK_GET_PROC_IDX(cmd) ((cmd) >> IOK2IOK_RAWCMD_BITS)
 #define IOK2IOK_MAKE_CMD(rawcmd, proc_idx) ((((uint64_t) proc_idx) << IOK2IOK_RAWCMD_BITS) | ((uint64_t) rawcmd))
+
+#define IOK2IOK_TS_CMD 0xfffffffffffffffUL
+
+extern uint64_t lat_hist_boundary_arr[];
+#define LAT_DIST_NUM_BINS 11
+
+extern uint64_t rx_pmyiok_to_seciok_lat_hist[LAT_DIST_NUM_BINS];
+extern uint64_t tx_seciok_to_pmyiok_lat_hist[LAT_DIST_NUM_BINS];
+
+#define MEASURE_TS
+#define TS_COUNT_INTERVAL 500
 
 // assume that packet length is < 64KB
 #define IOK2IOK_TXPKT_MAKE_RAWCMD(len, olflags) (((uint32_t) len) | (((uint32_t) olflags) << 16u))

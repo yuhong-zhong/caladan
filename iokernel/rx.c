@@ -112,6 +112,20 @@ static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
 	return true;
 }
 
+#ifdef MEASURE_TS
+static bool rx_send_ts_to_seciok(struct msg_chan_out *chan)
+{
+	bool success;
+
+	success = msg_send(chan, IOK2IOK_TS_CMD, rdtsc());
+	if (unlikely(!success)) {
+		log_err_ratelimited("rx: failed to send ts to secondary iokernel");
+		return false;
+	}
+	return true;
+}
+#endif
+
 static bool rx_send_pkt_to_runtime(struct proc *p, struct rte_mbuf *buf)
 {
 	uint32_t len, off, csum_type, rss_hash, rawcmd;
@@ -167,6 +181,9 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 	struct rte_ipv4_hdr *iphdr;
 	uint16_t ether_type;
 	uint32_t dst_ip;
+#ifdef MEASURE_TS
+	static uint64_t ts_count = 0;
+#endif
 
 	/* use hardware assisted flow tagging to match packets to procs */
 	if (buf->ol_flags & RTE_MBUF_F_RX_FDIR_ID) {
@@ -179,6 +196,13 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 					STAT_INC(RX_UNICAST_FAIL, 1);
 					goto fail_free;
 				}
+#ifdef MEASURE_TS
+				ts_count++;
+				if (ts_count == TS_COUNT_INTERVAL) {
+					rx_send_ts_to_seciok(&iok_as_primary_rxq[cfg.pmyiok_index][p->seciok_index]);
+					ts_count = 0;
+				}
+#endif
 			} else if (!rx_send_pkt_to_runtime(p, buf)) {
 				STAT_INC(RX_UNICAST_FAIL, 1);
 				goto fail_free;
@@ -307,6 +331,22 @@ static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_inde
 		log_debug_duration(success = msg_recv(chan, &cmd, &payload));
 		if (!success)
 			break;
+
+#ifdef MEASURE_TS
+		if (cmd == IOK2IOK_TS_CMD) {
+			uint64_t latency = (rdtsc() - payload) * 1000ul / cycles_per_us;
+			for (uint64_t j = 0; j < LAT_DIST_NUM_BINS; j++) {
+				if (j == LAT_DIST_NUM_BINS - 1) {
+					rx_pmyiok_to_seciok_lat_hist[j]++;
+					break;
+				} else if (latency <= lat_hist_boundary_arr[j]) {
+					rx_pmyiok_to_seciok_lat_hist[j]++;
+					break;
+				}
+			}
+			continue;
+		}
+#endif
 
 		rawcmd = IOK2IOK_GET_RAWCMD(cmd);
 		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);

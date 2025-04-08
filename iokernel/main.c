@@ -8,6 +8,7 @@
 #include <base/init.h>
 #include <base/log.h>
 #include <base/stddef.h>
+#include <iokernel/control.h>
 
 #include <sys/utsname.h>
 
@@ -114,6 +115,22 @@ static void dataplane_loop_vfio(void)
 	}
 }
 
+#ifdef MEASURE_TS
+uint64_t lat_hist_boundary_arr[] = {500UL, 600UL, 700UL, 800UL, 900UL, 1000UL, 2000UL, 3000UL, 4000UL, 5000UL};
+static_assert(((sizeof(lat_hist_boundary_arr) / sizeof(*lat_hist_boundary_arr)) + 1) == LAT_DIST_NUM_BINS,
+	"lat_hist_boundary_arr does not match with LAT_DIST_NUM_BINS");
+
+static void print_lat_hist(uint64_t *hist) {
+	for (int i = 0; i < LAT_DIST_NUM_BINS; i++) {
+		log_info("lat_hist[<= %d]:\t%lu", i < LAT_DIST_NUM_BINS - 1 ? (int) lat_hist_boundary_arr[i] : -1, hist[i]);
+		hist[i] = 0;
+	}
+	log_info("--------------------------------");
+}
+
+uint64_t rx_pmyiok_to_seciok_lat_hist[LAT_DIST_NUM_BINS];
+uint64_t tx_seciok_to_pmyiok_lat_hist[LAT_DIST_NUM_BINS];
+#endif
 /*
  * The main dataplane thread.
  */
@@ -123,6 +140,11 @@ void dataplane_loop(void)
 	int i;
 #if 0
 	uint64_t next_log_time = microtime();
+#endif
+
+#ifdef MEASURE_TS
+	memset(rx_pmyiok_to_seciok_lat_hist, 0, sizeof(rx_pmyiok_to_seciok_lat_hist));
+	memset(tx_seciok_to_pmyiok_lat_hist, 0, sizeof(tx_seciok_to_pmyiok_lat_hist));
 #endif
 
 	/*
@@ -212,6 +234,12 @@ void dataplane_loop(void)
 		/* handle control messages */
 		if (!work_done)
 			dp_clients_rx_control_lrpcs();
+
+#ifdef MEASURE_TS
+		if (cfg.is_secondary) {
+			call_every_n_seconds(print_lat_hist(rx_pmyiok_to_seciok_lat_hist), 5);
+		}
+#endif
 
 		STAT_INC(LOOPS, 1);
 

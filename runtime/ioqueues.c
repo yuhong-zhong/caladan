@@ -195,7 +195,9 @@ int ioqueues_init_early(void)
 	}
 
 	iok.iok_info = (struct iokernel_info *)shbuf;
-	memcpy(&netcfg.mac, &iok.iok_info->host_mac, sizeof(netcfg.mac));
+	if (!netcfg.mac_specified) {
+		memcpy(&netcfg.mac, &iok.iok_info->host_mac, sizeof(netcfg.mac));
+	}
 
 #ifdef DIRECTPATH
 	if (iok.iok_info->external_directpath_enabled) {

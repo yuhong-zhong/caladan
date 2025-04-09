@@ -36,6 +36,8 @@
  */
 
 #include <inttypes.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <rte_bus_pci.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -249,6 +251,8 @@ int dpdk_init(void)
 	else
 		ARGV("--socket-mem=128");
 
+	bool config_tap = false;
+
 	if (cfg.vfio_directpath) {
 		ARGV("--vdev=net_tap0");
 		ARGV("--allow");
@@ -260,7 +264,8 @@ int dpdk_init(void)
 		ARGV("--allow");
 		ARGV(nic_pci_addr_str);
 	} else {
-		ARGV("--vdev=net_tap0");
+		ARGV("--vdev=net_tap0,mac=fixed");
+		config_tap = true;
 	}
 
 	/* include any user-supplied arguments */
@@ -285,6 +290,18 @@ int dpdk_init(void)
 
 	if (rte_lcore_count() > 1)
 		log_warn("dpdk: too many lcores enabled, only 1 used");
+
+	if (config_tap) {
+		int fd = open("/sys/class/net/dtap0/mtu", O_RDWR);
+		if (fd < 0) {
+			log_err("dpdk: cannot open dtap0 mtu");
+			return -1;
+		}
+		char buf2[10];
+		sprintf(buf2, "%d", IOKERNEL_MTU);
+		write(fd, buf2, strlen(buf2));
+		close(fd);
+	}
 
 	return 0;
 }

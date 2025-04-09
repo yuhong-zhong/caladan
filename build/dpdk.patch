@@ -11,3 +11,16 @@ index 8eb29c1525..1d053bfb9e 100644
  #define RTE_MAX_MEMSEG_PER_LIST 8192
  #define RTE_MAX_MEM_MB_PER_LIST 32768
  #define RTE_MAX_MEMSEG_PER_TYPE 32768
+diff --git a/drivers/net/tap/rte_eth_tap.c b/drivers/net/tap/rte_eth_tap.c
+index bc3d56a311..161cc02a5a 100644
+--- a/drivers/net/tap/rte_eth_tap.c
++++ b/drivers/net/tap/rte_eth_tap.c
+@@ -1066,7 +1066,7 @@ tap_dev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
+ 
+ 	dev_info->if_index = internals->if_index;
+ 	dev_info->max_mac_addrs = 1;
+-	dev_info->max_rx_pktlen = (uint32_t)RTE_ETHER_MAX_VLAN_FRAME_LEN;
++	dev_info->max_rx_pktlen = (uint32_t) 9728;
+ 	dev_info->max_rx_queues = RTE_PMD_TAP_MAX_QUEUES;
+ 	dev_info->max_tx_queues = RTE_PMD_TAP_MAX_QUEUES;
+ 	dev_info->min_rx_bufsize = 0;

@@ -227,7 +227,18 @@ static int parse_runtime_quantum_us(const char *name, const char *val)
 
 static int parse_mac_address(const char *name, const char *val)
 {
-	log_warn("specifying mac address is deprecated.");
+	int ret;
+
+	ret = str_to_mac(val, &netcfg.mac);
+	if (ret) {
+		log_err("Could not parse mac: %s", val);
+		return ret;
+	} else {
+		log_info("mac address: %02x:%02x:%02x:%02x:%02x:%02x",
+		         netcfg.mac.addr[0], netcfg.mac.addr[1], netcfg.mac.addr[2],
+		         netcfg.mac.addr[3], netcfg.mac.addr[4], netcfg.mac.addr[5]);
+		netcfg.mac_specified = true;
+	}
 	return 0;
 }
 

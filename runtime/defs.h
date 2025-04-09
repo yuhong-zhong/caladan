@@ -576,7 +576,8 @@ struct net_cfg {
 	uint32_t		netmask;
 	uint32_t		gateway;
 	struct eth_addr		mac;
-	uint8_t			pad[14];
+	bool			mac_specified;
+	uint8_t			pad[13];
 };
 
 BUILD_ASSERT(sizeof(struct net_cfg) == CACHE_LINE_SIZE);

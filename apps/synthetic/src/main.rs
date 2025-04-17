@@ -27,6 +27,9 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::fs::File;
+use std::io::BufReader;
+use std::io::BufRead;
 
 use clap::{App, Arg};
 use itertools::Itertools;
@@ -50,6 +53,15 @@ pub struct Packet {
     actual_start: Option<Duration>,
     completion_time_ns: Arc<AtomicU64>,
     completion_server_tsc: Option<u64>,
+    completion_time: Option<Duration>,
+}
+
+#[derive(Default, Clone)]
+pub struct TracePacket {
+    timestamp: Duration,
+    length: usize,
+    target_start: Duration,
+    actual_start: Option<Duration>,
     completion_time: Option<Duration>,
 }
 
@@ -1185,6 +1197,205 @@ fn run_local(
         .all(|p| p)
 }
 
+fn read_trace_file(filename: &str, nthreads: usize) -> io::Result<Vec<Vec<TracePacket>>> {
+    let file = File::open(filename)?;
+    let reader = BufReader::new(file);
+    let mut packets: Vec<TracePacket> = Vec::new();
+    
+    // Read trace file line by line
+    for line in reader.lines() {
+        let line = line?;
+        let parts: Vec<&str> = line.trim().split_whitespace().collect();
+        if parts.len() != 2 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid trace format"));
+        }
+        
+        let timestamp = Duration::from_nanos(parts[0].parse::<u64>().map_err(|_| 
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid timestamp"))?);
+        let length = parts[1].parse::<f64>().map_err(|_| 
+            io::Error::new(io::ErrorKind::InvalidData, "Invalid length"))?;
+        let length = length as usize;
+
+        packets.push(TracePacket {
+            timestamp,
+            length,
+            target_start: timestamp,
+            ..Default::default()
+        });
+    }
+    
+    // Distribute packets across threads in round-robin fashion
+    let mut thread_packets: Vec<Vec<TracePacket>> = Vec::with_capacity(nthreads);
+    for _ in 0..nthreads {
+        thread_packets.push(Vec::new());
+    }
+    
+    for (i, packet) in packets.into_iter().enumerate() {
+        thread_packets[i % nthreads].push(packet);
+    }
+    
+    Ok(thread_packets)
+}
+
+fn run_trace_replay_worker(
+    proto: Arc<Box<dyn LoadgenProtocol>>,
+    backend: Backend,
+    addr: SocketAddrV4,
+    tport: Transport,
+    wg: shenango::WaitGroup,
+    wg_start: shenango::WaitGroup,
+    mut packets: Vec<TracePacket>,
+    index: usize,
+) -> Vec<Option<ScheduleResult>> {
+    let mut payload = Vec::with_capacity(MAX_TOTAL_SIZE);
+    let src_addr = SocketAddrV4::new(Ipv4Addr::new(0, 0, 0, 0), (100 + index) as u16);
+    let socket = Arc::new(match tport {
+        Transport::Tcp => backend.create_tcp_connection(Some(src_addr), addr).unwrap(),
+        Transport::Udp => backend.create_udp_connection(src_addr, Some(addr)).unwrap(),
+    });
+
+    let packets_per_thread = packets.len();
+    let socket2 = socket.clone();
+    let rproto = proto.clone();
+    let wg2 = wg.clone();
+    let receive_thread = backend.spawn_thread(move || {
+        let mut recv_buf = vec![0; MAX_TOTAL_SIZE];
+        let mut receive_times = vec![None; packets_per_thread];
+        let mut buf = Buffer::new(&mut recv_buf);
+        let use_ordering = rproto.uses_ordered_requests();
+        wg2.done();
+        for i in 0..receive_times.len() {
+            match rproto.read_response(&socket2, &mut buf) {
+                Ok((mut idx, tsc)) => {
+                    if use_ordering {
+                        idx = i;
+                    }
+                    if (idx as usize) >= receive_times.len() {
+                        println!("Received out-of-bounds index {}", idx);
+                        continue;
+                    }
+                    receive_times[idx] = Some((Instant::now(), tsc));
+                }
+                Err(e) => {
+                    match e.raw_os_error() {
+                        Some(-103) | Some(-104) => break,
+                        _ => (),
+                    }
+                    break;
+                }
+            }
+        }
+        receive_times
+    });
+
+    // If the send or receive thread is still running 500 ms after it should have finished,
+    // then stop it by triggering a shutdown on the socket.
+    let last = packets[packets.len() - 1].target_start;
+    let socket2 = socket.clone();
+    let wg2 = wg.clone();
+    let wg3 = wg_start.clone();
+    let timer = backend.spawn_thread(move || {
+        wg2.done();
+        wg3.wait();
+        backend.sleep(last + Duration::from_millis(500));
+        if Arc::strong_count(&socket2) > 1 {
+            socket2.shutdown();
+        }
+    });
+
+    wg.done();
+    wg_start.wait();
+    let start = Instant::now();
+
+    let mut rng: Mt64 = Mt64::new(rand::thread_rng().gen::<u64>());
+    for (i, packet) in packets.iter_mut().enumerate() {
+        payload.clear();
+        proto.gen_req(i, &Packet {
+            work_iterations: packet.length as u64,
+            randomness: rng.gen::<u64>(),
+            target_start: packet.target_start,
+            actual_start: None,
+            completion_time_ns: Arc::new(AtomicU64::new(0)),
+            completion_server_tsc: None,
+            completion_time: None,
+        }, &mut payload);
+
+        let mut t = start.elapsed();
+        while t + Duration::from_micros(1) < packet.target_start {
+            backend.sleep(packet.target_start - t);
+            t = start.elapsed();
+        }
+        if t > packet.target_start + Duration::from_micros(5) {
+            continue;
+        }
+
+        packet.actual_start = Some(start.elapsed());
+        if let Err(e) = (&*socket).write_all(&payload[..]) {
+            packet.actual_start = None;
+            match e.raw_os_error() {
+                Some(-32) | Some(-103) | Some(-104) => {}
+                _ => println!("Send thread ({}/{}): {}", i, packets.len(), e),
+            }
+            break;
+        }
+    }
+
+    wg.done();
+    wg_start.wait();
+
+    timer.join().unwrap();
+    receive_thread
+        .join()
+        .unwrap()
+        .into_iter()
+        .zip(
+            packets
+                .iter_mut()
+                .filter(|p| !proto.uses_ordered_requests() || p.actual_start.is_some()),
+        )
+        .for_each(|(c, p)| {
+            if let Some((inst, _tsc)) = c {
+                (*p).completion_time = Some(inst - start);
+            }
+        });
+
+    let mut latencies = BTreeMap::new();
+    let mut dropped = 0;
+    let mut never_sent = 0;
+    for p in packets.iter() {
+        match (p.actual_start, p.completion_time) {
+            (None, _) => never_sent += 1,
+            (_, None) => dropped += 1,
+            (Some(start), Some(end)) => {
+                if end <= start {
+                    println!("End before start");
+                    dropped += 1;
+                } else {
+                    *latencies.entry(duration_to_ns(end - start) / 1000).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    if packets.len() - dropped - never_sent <= 1 {
+        return vec![None];
+    }
+
+    let first_send = packets.iter().filter_map(|p| p.actual_start).min();
+    let last_send = packets.iter().filter_map(|p| p.actual_start).max();
+
+    vec![Some(ScheduleResult {
+        packet_count: packets.len() - dropped - never_sent,
+        drop_count: dropped,
+        never_sent_count: never_sent,
+        first_send: first_send,
+        last_send: last_send,
+        latencies: latencies,
+        first_tsc: Some(0),
+        trace: None,
+    })]
+}
+
 fn main() {
     let matches = App::new("Synthetic Workload Application")
         .version("0.1")
@@ -1220,6 +1431,7 @@ fn main() {
                     "runtime-client",
                     "spawner-server",
                     "local-client",
+                    "trace-replay",
                 ])
                 .required(true)
                 .requires_ifs(&[("runtime-client", "config"), ("spawner-server", "config")])
@@ -1396,6 +1608,13 @@ fn main() {
                 .default_value("0")
                 .help("seconds to sleep between samples"),
         )
+        .arg(
+            Arg::with_name("trace-file")
+                .long("trace-file")
+                .takes_value(true)
+                .help("Path to packet trace file")
+                .requires("mode"),
+        )
         .args(&SyntheticProtocol::args())
         .args(&MemcachedProtocol::args())
         .args(&DnsProtocol::args())
@@ -1458,7 +1677,7 @@ fn main() {
     let mode = matches.value_of("mode").unwrap();
     let backend = match mode {
         "linux-server" | "linux-client" => Backend::Linux,
-        "spawner-server" | "runtime-client" | "local-client" => Backend::Runtime,
+        "spawner-server" | "runtime-client" | "local-client" | "trace-replay" => Backend::Runtime,
         _ => unreachable!(),
     };
 
@@ -1546,6 +1765,95 @@ fn main() {
                     );
                     backend.sleep(Duration::from_secs(3));
                 }
+            });
+        }
+        "trace-replay" => {
+            let matches = matches.clone();
+            let trace_file = matches.value_of("trace-file").unwrap();
+            let thread_packets = read_trace_file(trace_file, nthreads).unwrap();
+            
+            backend.init_and_run(config, move || {
+                let wg = shenango::WaitGroup::new();
+                wg.add(3 * nthreads as i32);
+                let wg_start = shenango::WaitGroup::new();
+                wg_start.add(1 as i32);
+
+                let mut barrier_group: Option<lockstep::Group> = None;
+
+                match (matches.value_of("protocol").unwrap(), &barrier_group) {
+                    (_, Some(lockstep::Group::Client(ref _c))) => (),
+                    ("memcached", _) => {
+                        let proto = MemcachedProtocol::with_args(&matches, Transport::Tcp);
+                        for addr in &addrs {
+                            if !run_memcached_preload(proto, backend, Transport::Tcp, *addr, nthreads) {
+                                panic!("Could not preload memcached");
+                            }
+                        }
+                    },
+                    _ => (),
+                };
+
+                let conn_threads: Vec<_> = (0..nthreads)
+                    .into_iter()
+                    .map(|i| {
+                        let client_idx = 100 + i;
+                        let proto = proto.clone();
+                        let wg = wg.clone();
+                        let wg_start = wg_start.clone();
+                        let packets = thread_packets[i].clone();
+                        let addr = addrs[i % addrs.len()];
+
+                        backend.spawn_thread(move || {
+                            run_trace_replay_worker(
+                                proto,
+                                backend,
+                                addr,
+                                tport,
+                                wg,
+                                wg_start,
+                                packets,
+                                client_idx,
+                            )
+                        })
+                    })
+                    .collect();
+
+                backend.sleep(Duration::from_secs(1));
+                wg.wait();
+
+                if let Some(ref mut g) = barrier_group {
+                    g.barrier();
+                }
+
+                wg_start.done();
+                let start_unix = SystemTime::now();
+
+                wg.add(nthreads as i32);
+                wg_start.add(1 as i32);
+
+                wg.wait();
+                wg_start.done();
+
+                let mut packets: Vec<Vec<Option<ScheduleResult>>> = conn_threads
+                    .into_iter()
+                    .map(|s| s.join().unwrap())
+                    .collect();
+
+                let sched_start = Duration::from_nanos(100_000_000);
+                let perthread = packets.iter_mut().filter_map(|p| p[0].take()).collect();
+                process_result_final(
+                    &RequestSchedule {
+                        arrival: Distribution::Exponential(0.0),
+                        service: distribution,
+                        output: output,
+                        runtime: Duration::from_secs(0),
+                        rps: 0,
+                        discard_pct: 0.0,
+                    },
+                    perthread,
+                    start_unix,
+                    sched_start,
+                );
             });
         }
         "linux-client" | "runtime-client" => {

@@ -1655,3 +1655,23 @@ int tcp_init_late(void)
 {
 	return thread_spawn(tcp_worker, NULL);
 }
+
+ssize_t tcp_read(tcpconn_t *c, void *buf, size_t len)
+{
+	return tcp_read2(c, buf, len, false, false);
+}
+
+ssize_t tcp_write(tcpconn_t *c, const void *buf, size_t len)
+{
+	return tcp_write2(c, buf, len, false);
+}
+
+ssize_t tcp_readv(tcpconn_t *c, const struct iovec *iov, int iovcnt)
+{
+	return tcp_readv2(c, iov, iovcnt, false, false);
+}
+
+ssize_t tcp_writev(tcpconn_t *c, const struct iovec *iov, int iovcnt)
+{
+	return tcp_writev2(c, iov, iovcnt, false);
+}

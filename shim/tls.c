@@ -55,19 +55,20 @@ static struct key_data *get_ts_struct(int key)
 	struct key_data *arr;
 	uint64_t keygen;
 
-	if (likely(shim_active()))
-		arr = (struct key_data *)get_uthread_specific();
-	else
-		arr = kd_noruntime;
+	// if (likely(shim_active()))
+	// 	arr = (struct key_data *)get_uthread_specific();
+	// else
+	// 	arr = kd_noruntime;
+	arr = kd_noruntime;
 
-	if (unlikely(!arr)) {
-		arr = calloc(MAX_KEYS, sizeof(struct key_data));
-		BUG_ON(!arr);
-		if (shim_active())
-			set_uthread_specific((uint64_t)arr);
-		else
-			kd_noruntime = arr;
-	}
+	// if (unlikely(!arr)) {
+	// 	arr = calloc(MAX_KEYS, sizeof(struct key_data));
+	// 	BUG_ON(!arr);
+	// 	if (shim_active())
+	// 		set_uthread_specific((uint64_t)arr);
+	// 	else
+	// 		kd_noruntime = arr;
+	// }
 
 	keygen = load_acquire(&key_gens[key]);
 	if (unlikely(arr[key].gen != keygen)) {

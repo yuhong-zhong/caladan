@@ -939,3 +939,15 @@ int udp_init(void)
 	udp_payload_size -= sizeof(struct ip_hdr) + sizeof(struct udp_hdr);
 	return 0;
 }
+
+ssize_t udp_read_from(udpconn_t *c, void *buf, size_t len,
+ 			     struct netaddr *raddr)
+{
+	return udp_read_from2(c, buf, len, raddr, false, false);
+}
+ 
+ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
+			    const struct netaddr *raddr)
+{
+	return udp_write_to2(c, buf, len, raddr, false);
+}

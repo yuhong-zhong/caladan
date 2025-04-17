@@ -48,17 +48,10 @@ extern ssize_t udp_write_to2(udpconn_t *c, const void *buf, size_t len,
 extern ssize_t udp_readv_from2(udpconn_t *c, const struct iovec *iov, int iovcnt,
                       struct netaddr *raddr, bool peek, bool nonblocking);
 
-static inline ssize_t udp_read_from(udpconn_t *c, void *buf, size_t len,
-			     struct netaddr *raddr)
-{
-	return udp_read_from2(c, buf, len, raddr, false, false);
-}
-
-static inline ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
-			    const struct netaddr *raddr)
-{
-	return udp_write_to2(c, buf, len, raddr, false);
-}
+extern ssize_t udp_read_from(udpconn_t *c, void *buf, size_t len,
+ 			     struct netaddr *raddr);
+extern ssize_t udp_write_to(udpconn_t *c, const void *buf, size_t len,
+ 			    const struct netaddr *raddr);
 
 extern ssize_t udp_read(udpconn_t *c, void *buf, size_t len);
 extern ssize_t udp_write(udpconn_t *c, const void *buf, size_t len);

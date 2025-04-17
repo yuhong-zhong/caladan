@@ -26,6 +26,10 @@ iokernel_obj = $(iokernel_src:.c=.o)
 host_agent_src = $(wildcard host_agent/*.c)
 host_agent_obj = $(host_agent_src:.c=.o)
 
+# NIC failover service
+nic_failover_src = $(wildcard nic_failover/*.c)
+nic_failover_obj = $(nic_failover_src:.c=.o)
+
 # runtime - a user-level threading and networking library
 runtime_src = $(wildcard runtime/*.c) $(wildcard runtime/net/*.c)
 runtime_src += $(wildcard runtime/net/directpath/*.c)
@@ -48,7 +52,7 @@ DPDK_LIBS=$(shell PKG_CONFIG_PATH=$(PKG_CONFIG_PATH) pkg-config --libs --static 
 
 
 # must be first
-all: libbase.a libnet.a libruntime.a iokerneld $(test_targets) shim agent
+all: libbase.a libnet.a libruntime.a iokerneld $(test_targets) shim agent failover
 
 $(iokernel_obj): INC += -I$(DPDK_PATH)/build/include
 
@@ -73,6 +77,9 @@ iokerneld: $(iokernel_obj) libbase.a libnet.a base/base.ld $(PCM_DEPS)
 agent: $(host_agent_obj) libbase.a libnet.a base/base.ld
 	$(LD) $(LDFLAGS) -o $@ $(host_agent_obj) libbase.a libnet.a
 
+failover: $(nic_failover_obj) libbase.a libnet.a base/base.ld
+	$(LD) $(LDFLAGS) -o $@ $(nic_failover_obj) libbase.a libnet.a
+
 $(test_targets): $(test_obj) libbase.a libruntime.a libnet.a base/base.ld
 	$(LD) $(FLAGS) $(LDFLAGS) -o $@ $@.o $(RUNTIME_LIBS)
 
@@ -82,7 +89,7 @@ shim:
 .PHONY: shim
 
 # general build rules for all targets
-src = $(base_src) $(net_src) $(runtime_src) $(iokernel_src) $(host_agent_src) $(test_src)
+src = $(base_src) $(net_src) $(runtime_src) $(iokernel_src) $(host_agent_src) $(test_src) $(nic_failover_src)
 asm = $(runtime_asm) $(base_asm)
 obj = $(src:.c=.o) $(asm:.S=.o)
 dep = $(obj:.o=.d)
@@ -111,5 +118,5 @@ submodules-clean:
 .PHONY: clean
 clean:
 	rm -f $(obj) $(dep) libbase.a libnet.a libruntime.a \
-	iokerneld $(test_targets) agent
+	iokerneld $(test_targets) agent failover
 	$(MAKE) -C shim/ clean

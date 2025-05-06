@@ -16,5 +16,7 @@ add_executable(rt_mpi_cxl rt_mpi_cxl.cpp)
 
 add_executable(wipe_cxl wipe_cxl.cpp)
 add_executable(mpi_cxl mpi_cxl.cpp)
+add_executable(test_interleaving_write test_interleaving_write.cpp)
+add_executable(test_interleaving_read test_interleaving_read.cpp)
 
 target_link_libraries(msg_bench numa)

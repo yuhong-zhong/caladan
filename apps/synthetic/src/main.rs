@@ -618,6 +618,31 @@ fn process_result(sched: &RequestSchedule, packets: &mut [Packet]) -> Option<Sch
 
     let trace = match sched.output {
         OutputMode::Trace => {
+            // let mut traceresults: Vec<_> = packets
+            //     .into_iter()
+            //     .filter_map(|p| {
+            //         if !p.actual_start.is_some() {
+            //             return None;
+            //         }
+            //         if !p.completion_time.is_some() {
+            //             return Some(TraceResult {
+            //                 actual_start: p.actual_start,
+            //                 target_start: p.target_start,
+            //                 completion_time: None,
+            //                 server_tsc: 0,
+            //             })
+            //         } else {
+            //             return Some(TraceResult {
+            //                 actual_start: p.actual_start,
+            //                 target_start: p.target_start,
+            //                 completion_time: p.completion_time,
+            //                 server_tsc: p.completion_server_tsc.unwrap(),
+            //             })
+            //         }
+            //     })
+            //     .collect();
+            // traceresults.sort_by_key(|p| p.actual_start.unwrap());
+            // Some(traceresults)
             let mut traceresults: Vec<_> = packets
                 .into_iter()
                 .filter_map(|p| {
@@ -1384,6 +1409,23 @@ fn run_trace_replay_worker(
     let first_send = packets.iter().filter_map(|p| p.actual_start).min();
     let last_send = packets.iter().filter_map(|p| p.actual_start).max();
 
+    let mut traceresults: Vec<_> = packets.clone()
+        .into_iter()
+        .filter_map(|p| {
+            if !p.completion_time.is_some() {
+                return None;
+            }
+            Some(TraceResult {
+                actual_start: p.actual_start,
+                target_start: p.target_start,
+                completion_time: p.completion_time,
+                server_tsc: 0,
+            })
+        })
+        .collect();
+    traceresults.sort_by_key(|p| p.actual_start.unwrap());
+    let trace = Some(traceresults);
+
     vec![Some(ScheduleResult {
         packet_count: packets.len() - dropped - never_sent,
         drop_count: dropped,
@@ -1392,7 +1434,7 @@ fn run_trace_replay_worker(
         last_send: last_send,
         latencies: latencies,
         first_tsc: Some(0),
-        trace: None,
+        trace: trace,
     })]
 }
 

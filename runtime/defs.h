@@ -23,6 +23,9 @@
 #include <runtime/rcu.h>
 #include <runtime/preempt.h>
 
+#define ROUND_DOWN(a, b) ((a) / (b) * (b))
+#define ROUND_UP(a, b) (((a) + (b) - 1) / (b) * (b))
+
 
 /*
  * constant limits
@@ -189,9 +192,18 @@ stack_init_to_rsp_with_buf(struct stack *s, void **buf, size_t buf_len,
  * ioqueues
  */
 
+extern const char *rt_cxl_path;
+extern int iok_socket_index;
+extern int cfg_pmyiok_index;
+extern int cfg_bak_pmyiok_index;
+
 struct iokernel_control {
 	int fd;
-	int mem_fd;
+
+	// int mem_fd;
+	uint8_t *cxl_shm_buf;
+	uint64_t cxl_shm_len;
+
 	struct control_hdr *hdr;
 	struct thread_spec *threads;
 	const struct iokernel_info *iok_info;
@@ -376,6 +388,11 @@ struct kthread {
 	struct storage_q	storage_q;
 #endif
 
+	/* MAC address and pmyiok index */
+	struct eth_addr		mac;
+	int			pmyiok_index;
+	unsigned long		pad3[6];
+
 	/* 10th cache-line, statistics counters */
 	uint64_t		stats[STAT_NR];
 };
@@ -389,6 +406,7 @@ BUILD_ASSERT(offsetof(struct kthread, timer_lock) % CACHE_LINE_SIZE == 0);
 #ifdef DIRECT_STORAGE
 BUILD_ASSERT(offsetof(struct kthread, storage_q) % CACHE_LINE_SIZE == 0);
 #endif
+BUILD_ASSERT(offsetof(struct kthread, mac) % CACHE_LINE_SIZE == 0);
 BUILD_ASSERT(offsetof(struct kthread, stats) % CACHE_LINE_SIZE == 0);
 
 DECLARE_PERTHREAD(struct kthread *, mykthread);
@@ -430,21 +448,33 @@ static __always_inline __nofp void putk(void)
 /* preempt_cede_needed - check if kthread should cede */
 static __always_inline __nofp bool preempt_cede_needed(struct kthread *k)
 {
+#ifdef NO_SCHED
+	return false;
+#else
 	return k->q_ptrs->curr_grant_gen ==
 	       ACCESS_ONCE(k->q_ptrs->cede_gen);
+#endif
 }
 
 /* preempt_yield_needed - check if current uthread should yield */
 static __always_inline __nofp bool preempt_yield_needed(struct kthread *k)
 {
+#ifdef NO_SCHED
+	return false;
+#else
         return ACCESS_ONCE(k->q_ptrs->yield_rcu_gen) == k->rcu_gen;
+#endif
 }
 
 /* preempt_park_needed - check if kthread should park itself */
 static __always_inline __nofp bool preempt_park_needed(struct kthread *k)
 {
+#ifdef NO_SCHED
+	return false;
+#else
 	return k->q_ptrs->curr_grant_gen ==
 	       ACCESS_ONCE(k->q_ptrs->park_gen);
+#endif
 }
 
 #ifdef DIRECT_STORAGE
@@ -485,6 +515,10 @@ extern unsigned int cfg_request_hardware_queues;
 extern uint64_t cfg_ht_punish_us;
 extern uint64_t cfg_qdelay_us;
 extern uint64_t cfg_quantum_us;
+
+#ifdef NO_SCHED
+DECLARE_BITMAP(rt_cores, NCPU);
+#endif
 
 extern void kthread_park(void);
 extern void kthread_park_now(void);
@@ -549,7 +583,6 @@ struct cfg_arp_static_entry {
 extern size_t arp_static_count;
 extern struct cfg_arp_static_entry *static_entries;
 
-extern void net_rx_softirq(struct rx_net_hdr **hdrs, unsigned int nr);
 extern void net_rx_softirq_direct(struct mbuf **ms, unsigned int nr);
 
 extern int __noinline net_tx_drain_overflow(void);
@@ -729,6 +762,7 @@ struct directpath_spec;
 extern int mlx5_init_ext_late(struct directpath_spec *spec, int bar_fd, int mem_fd);
 
 /* configuration loading */
+extern int cfg_early_load(const char *path);
 extern int cfg_load(const char *path);
 
 /* internal runtime scheduling functions */

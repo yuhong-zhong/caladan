@@ -4,6 +4,7 @@
 
 #include <fcntl.h>
 #include <pthread.h>
+#include <unistd.h>
 #include <string.h>
 #include <sys/ipc.h>
 #include <sys/mman.h>
@@ -31,6 +32,12 @@
 
 #define PACKET_QUEUE_MCOUNT	4096
 #define LRPC_QUEUE_SIZE_DIRECTPATH 16
+
+
+const char *rt_cxl_path = NULL;
+int iok_socket_index = 0;
+int cfg_pmyiok_index = 0;
+int cfg_bak_pmyiok_index = MAX_NR_IOK2IOK;
 
 static size_t lrpc_q_size(void)
 {
@@ -128,6 +135,22 @@ static size_t estimate_shm_space(void)
 	return ret;
 }
 
+// void iok_shm_mmap()
+// {
+// 	struct shm_region *r = &netcfg.tx_region;
+// 	int ret;
+
+// 	r->len = align_up(estimate_shm_space(), shm_page_size());
+// 	ret = ftruncate(iok.mem_fd, r->len);
+// 	if (ret)
+// 		panic("failed to grow memfd");
+// 	r->base = mmap(NULL, r->len, PROT_READ|PROT_WRITE, MAP_SHARED, iok.mem_fd, 0);
+// 	if (r->base == MAP_FAILED)
+// 		panic("failed to map shared memory (requested %lu bytes)", r->len);
+// 	touch_mapping(r->base, r->len, shm_page_size());
+// 	log_info("shm: using %lu bytes", r->len);
+// }
+
 /*
  * iok_shm_alloc - allocator for iokernel shared memory region
  * this is intended only for use during initialization.
@@ -140,20 +163,8 @@ void *iok_shm_alloc(size_t size, size_t alignment, shmptr_t *shm_out)
 	static size_t allocated;
 	struct shm_region *r = &netcfg.tx_region;
 	void *p;
-	int ret;
 
 	spin_lock(&shmlock);
-	if (!r->base) {
-		r->len = align_up(estimate_shm_space(), shm_page_size());
-		ret = ftruncate(iok.mem_fd, r->len);
-		if (ret)
-			panic("failed to grow memfd");
-		r->base = mmap(NULL, r->len, PROT_READ|PROT_WRITE, MAP_SHARED, iok.mem_fd, 0);
-		if (r->base == MAP_FAILED)
-			panic("failed to map shared memory (requested %lu bytes)", r->len);
-		touch_mapping(r->base, r->len, shm_page_size());
-		log_info("shm: using %lu bytes", r->len);
-	}
 
 	if (alignment)
 		allocated = align_up(allocated, alignment);
@@ -184,17 +195,105 @@ static void ioqueue_alloc(struct queue_spec *q, size_t msg_count,
 
 int ioqueues_init_early(void)
 {
-	void *shbuf;
+	// void *shbuf;
 
-	shbuf = mem_map_shm_rdonly(IOKERNEL_INFO_KEY, NULL, IOKERNEL_INFO_SIZE,
-	                           PGSIZE_4KB);
-	if (unlikely(shbuf == MAP_FAILED)) {
-		log_err("control_setup: failed to map iokernel info region");
-		log_err("Please make sure IOKernel is running");
-		return -1;
+	// shbuf = mem_map_shm_rdonly(IOKERNEL_INFO_KEY, NULL, IOKERNEL_INFO_SIZE,
+	//                            PGSIZE_4KB);
+	// if (unlikely(shbuf == MAP_FAILED)) {
+	// 	log_err("control_setup: failed to map iokernel info region");
+	// 	log_err("Please make sure IOKernel is running");
+	// 	return -1;
+	// }
+	// iok.iok_info = (struct iokernel_info *)shbuf;
+
+	struct sockaddr_un addr;
+	int socket_command = IOK_REGISTER_REGULAR;
+	uint64_t cxl_shm_offset, cxl_shm_len;
+	ssize_t ret;
+	int fd;
+
+	// Make sure it's an abstract namespace path.
+	assert(CONTROL_SOCK_PATH_PREFIX[0] == '\0');
+
+	BUILD_ASSERT(sizeof(CONTROL_SOCK_PATH_PREFIX) <= sizeof(addr.sun_path));
+	addr.sun_family = AF_UNIX;
+	memcpy(addr.sun_path, CONTROL_SOCK_PATH_PREFIX, sizeof(CONTROL_SOCK_PATH_PREFIX));
+	snprintf(addr.sun_path + sizeof(CONTROL_SOCK_PATH_PREFIX) - 1,
+		 sizeof(addr.sun_path) - sizeof(CONTROL_SOCK_PATH_PREFIX) - 1,
+		 "%d", iok_socket_index);
+
+	log_info("ioqueues_init_early: using socket path %s", addr.sun_path + 1);
+
+	iok.fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (iok.fd == -1) {
+		log_err("ioqueues_init_early: socket() failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
 	}
 
-	iok.iok_info = (struct iokernel_info *)shbuf;
+	if (connect(iok.fd, (struct sockaddr *)&addr,
+		    sizeof(addr.sun_family) + strlen(addr.sun_path + 1) + 2) == -1) {
+		log_err("ioqueues_init_early: connect() failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	ret = write(iok.fd, &socket_command, sizeof(socket_command));
+	if (ret != sizeof(socket_command)) {
+		log_err("ioqueues_init_early: write(socket_command) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	ret = write(iok.fd, &cfg_pmyiok_index, sizeof(cfg_pmyiok_index));
+	if (ret != sizeof(cfg_pmyiok_index)) {
+		log_err("ioqueues_init_early: write(cfg_pmyiok_index) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	ret = write(iok.fd, &cfg_bak_pmyiok_index, sizeof(cfg_bak_pmyiok_index));
+	if (ret != sizeof(cfg_bak_pmyiok_index)) {
+		log_err("ioqueues_init_early: write(cfg_bak_pmyiok_index) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	ret = read(iok.fd, &cxl_shm_offset, sizeof(cxl_shm_offset));
+	if (ret != sizeof(cxl_shm_offset)) {
+		log_err("ioqueues_init_early: read(cxl_shm_offset) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	ret = read(iok.fd, &cxl_shm_len, sizeof(cxl_shm_len));
+	if (ret != sizeof(cxl_shm_len)) {
+		log_err("ioqueues_init_early: read(cxl_shm_len) failed, len=%ld [%s]",
+			ret, strerror(errno));
+		RT_BUG_ON(true);
+	}
+
+	RT_BUG_ON(cxl_shm_len == 0);
+	RT_BUG_ON(cxl_shm_offset % PGSIZE_2MB != 0);
+	RT_BUG_ON(cxl_shm_len % PGSIZE_2MB != 0);
+
+	fd = open(rt_cxl_path, O_RDWR);
+	RT_BUG_ON(fd < 0);
+
+	log_info("ioqueues_init_early: cxl_shm_offset = 0x%lx, cxl_shm_len = 0x%lx", cxl_shm_offset, cxl_shm_len);
+	iok.cxl_shm_buf = (uint8_t *) mmap(NULL, cxl_shm_len, PROT_READ | PROT_WRITE, MAP_SHARED, fd, cxl_shm_offset);
+	if (iok.cxl_shm_buf == MAP_FAILED) {
+		log_err("ioqueues_init_early: mmap failed, errno: [%s]", strerror(errno));
+		RT_BUG_ON(true);
+	}
+	RT_BUG_ON((uint64_t) iok.cxl_shm_buf % PGSIZE_2MB != 0);
+	close(fd);
+	iok.cxl_shm_len = cxl_shm_len;
+
+	iok.iok_info = (struct iokernel_info *) iok.cxl_shm_buf;
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(iok.iok_info, sizeof(*iok.iok_info));
+	_mm_sfence();
+#endif
+	RT_BUG_ON(iok.iok_info->magic_number != 0xbeef);
 	memcpy(&netcfg.mac, &iok.iok_info->host_mac, sizeof(netcfg.mac));
 
 #ifdef DIRECTPATH
@@ -216,33 +315,50 @@ int ioqueues_init_early(void)
  */
 int ioqueues_init(void)
 {
-	int i, flags = 0;
+	int i;
 	struct thread_spec *ts;
+	int fd;
 
-	if (shm_page_size() > PGSIZE_4KB)
-		flags |= MFD_HUGETLB;
+// 	int flags = 0;
+//
+// 	if (shm_page_size() > PGSIZE_4KB)
+// 		flags |= MFD_HUGETLB;
+//
+// #ifdef MFD_EXEC
+// 	flags |= MFD_EXEC;
+// #endif
+//
+// 	iok.mem_fd = memfd_create("iok_signals", flags);
+// 	if (iok.mem_fd < 0) {
+// 		log_err("ioqueues: failed to create mem fd");
+// 		return -errno;
+// 	}
+// 	iok_shm_mmap();
 
-#ifdef MFD_EXEC
-	flags |= MFD_EXEC;
-#endif
-
-	iok.mem_fd = memfd_create("iok_signals", flags);
-	if (iok.mem_fd < 0) {
-		log_err("ioqueues: failed to create mem fd");
-		return -errno;
-	}
+	struct shm_region *r = &netcfg.tx_region;
+	r->base = iok.cxl_shm_buf + PGSIZE_2MB;
+	r->len = iok.cxl_shm_len - PGSIZE_2MB;
+	touch_mapping(r->base, r->len, PGSIZE_2MB);
+	RT_BUG_ON(r->len < estimate_shm_space());
+	log_info("ioqueues_init: using CXL shared memory as tx_region");
 
 	if (!cfg_directpath_external()) {
 		/* map ingress memory */
-		netcfg.rx_region.base =
-		    mem_map_shm_rdonly(INGRESS_MBUF_SHM_KEY, NULL, INGRESS_MBUF_SHM_SIZE,
-				PGSIZE_4KB);
-		if (netcfg.rx_region.base == MAP_FAILED) {
-			log_err("control_setup: failed to map ingress region");
-			log_err("Please make sure IOKernel is running");
-			return -1;
-		}
-		netcfg.rx_region.len = INGRESS_MBUF_SHM_SIZE;
+
+		fd = open(rt_cxl_path, O_RDWR);
+		RT_BUG_ON(fd < 0);
+		netcfg.rx_region.base = mmap(NULL, INGRESS_MBUF_SHM_SIZE * MAX_NR_IOK2IOK, PROT_READ | PROT_WRITE, MAP_SHARED, fd, iok.iok_info->rx_cxl_shm_offset);
+		RT_BUG_ON(netcfg.rx_region.base == MAP_FAILED);
+		close(fd);
+		// netcfg.rx_region.base =
+		//     mem_map_shm_rdonly(INGRESS_MBUF_SHM_KEY, NULL, INGRESS_MBUF_SHM_SIZE,
+		// 		PGSIZE_4KB);
+		// if (netcfg.rx_region.base == MAP_FAILED) {
+		// 	log_err("control_setup: failed to map ingress region");
+		// 	log_err("Please make sure IOKernel is running");
+		// 	return -1;
+		// }
+		netcfg.rx_region.len = INGRESS_MBUF_SHM_SIZE * MAX_NR_IOK2IOK;
 	}
 
 	/* set up queues in shared memory */
@@ -282,11 +398,11 @@ int ioqueues_init(void)
 	return 0;
 }
 
-static void ioqueues_shm_cleanup(void)
-{
-	mem_unmap_shm(netcfg.tx_region.base);
-	mem_unmap_shm(netcfg.rx_region.base);
-}
+// static void ioqueues_shm_cleanup(void)
+// {
+// 	mem_unmap_shm(netcfg.tx_region.base);
+// 	mem_unmap_shm(netcfg.rx_region.base);
+// }
 
 #ifdef DIRECTPATH
 
@@ -338,8 +454,12 @@ int ioqueues_register_iokernel(void)
 {
 	struct control_hdr *hdr;
 	struct shm_region *r = &netcfg.tx_region;
-	struct sockaddr_un addr;
+	// struct sockaddr_un addr;
+	uint64_t status_code = IOK_REGISTER_OK;
 	int ret;
+#ifdef NO_SCHED
+	int i;
+#endif
 
 	/* initialize control header */
 	hdr = iok.hdr;
@@ -362,38 +482,54 @@ int ioqueues_register_iokernel(void)
 	hdr->sched_cfg.guaranteed_cores = guaranteedks;
 	hdr->sched_cfg.preferred_socket = preferred_socket;
 	hdr->sched_cfg.quantum_us = cfg_quantum_us;
+#ifdef NO_SCHED
+	bitmap_init(hdr->sched_cfg.rt_cores, NCPU, false);
+	bitmap_for_each_set(rt_cores, NCPU, i)
+		bitmap_set(hdr->sched_cfg.rt_cores, i);
+#endif
 	hdr->thread_specs = ptr_to_shmptr(r, iok.threads, sizeof(*iok.threads) * maxks);
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(hdr, sizeof(*hdr));
+	batch_clflushopt(iok.threads, sizeof(*iok.threads) * maxks);
+	_mm_mfence();
+#endif
 
-	// Make sure it's an abstract namespace path.
-	assert(CONTROL_SOCK_PATH[0] == '\0');
+	// // Make sure it's an abstract namespace path.
+	// assert(CONTROL_SOCK_PATH[0] == '\0');
 
-	/* register with iokernel */
-	BUILD_ASSERT(sizeof(CONTROL_SOCK_PATH) <= sizeof(addr.sun_path));
-	addr.sun_family = AF_UNIX;
-	memcpy(addr.sun_path, CONTROL_SOCK_PATH, sizeof(CONTROL_SOCK_PATH));
+	// /* register with iokernel */
+	// BUILD_ASSERT(sizeof(CONTROL_SOCK_PATH) <= sizeof(addr.sun_path));
+	// addr.sun_family = AF_UNIX;
+	// memcpy(addr.sun_path, CONTROL_SOCK_PATH, sizeof(CONTROL_SOCK_PATH));
 
-	iok.fd = socket(AF_UNIX, SOCK_STREAM, 0);
-	if (iok.fd == -1) {
-		log_err("register_iokernel: socket() failed [%s]", strerror(errno));
-		goto fail;
-	}
+	// iok.fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	// if (iok.fd == -1) {
+	// 	log_err("register_iokernel: socket() failed [%s]", strerror(errno));
+	// 	goto fail;
+	// }
 
-	if (connect(iok.fd, (struct sockaddr *)&addr,
-		 sizeof(addr.sun_family) + sizeof(CONTROL_SOCK_PATH)) == -1) {
-		log_err("register_iokernel: connect() failed [%s]", strerror(errno));
-		goto fail_close_fd;
-	}
+	// if (connect(iok.fd, (struct sockaddr *)&addr,
+	// 	 sizeof(addr.sun_family) + sizeof(CONTROL_SOCK_PATH)) == -1) {
+	// 	log_err("register_iokernel: connect() failed [%s]", strerror(errno));
+	// 	goto fail_close_fd;
+	// }
 
-	ret = send_fd(iok.fd, iok.mem_fd);
-	if (ret) {
-		log_err("register_iokernel: failed to send fd [%s]", strerror(errno));
-		goto fail_close_fd;
-	}
+	// ret = send_fd(iok.fd, iok.mem_fd);
+	// if (ret) {
+	// 	log_err("register_iokernel: failed to send fd [%s]", strerror(errno));
+	// 	goto fail_close_fd;
+	// }
 
-	ret = write(iok.fd, &netcfg.tx_region.len, sizeof(netcfg.tx_region.len));
-	if (ret != sizeof(netcfg.tx_region.len)) {
-		log_err("register_iokernel: write() failed [%s]", strerror(errno));
-		goto fail_close_fd;
+	// ret = write(iok.fd, &netcfg.tx_region.len, sizeof(netcfg.tx_region.len));
+	// if (ret != sizeof(netcfg.tx_region.len)) {
+	// 	log_err("register_iokernel: write() failed [%s]", strerror(errno));
+	// 	goto fail_close_fd;
+	// }
+
+	ret = write(iok.fd, &status_code, sizeof(status_code));
+	if (ret != sizeof(status_code)) {
+		log_err("ioqueues_register_iokernel: write(status_code) failed [%s]", strerror(errno));
+		RT_BUG_ON(true);
 	}
 
 #ifdef DIRECTPATH
@@ -401,18 +537,18 @@ int ioqueues_register_iokernel(void)
 		ret = setup_external_directpath(iok.fd);
 		if (ret) {
 			log_err("dp setup error");
-			goto fail_close_fd;
+			RT_BUG_ON(true);
 		}
 	}
 #endif
 
 	return 0;
 
-fail_close_fd:
-	close(iok.fd);
-fail:
-	ioqueues_shm_cleanup();
-	return -errno;
+// fail_close_fd:
+// 	close(iok.fd);
+// fail:
+// 	ioqueues_shm_cleanup();
+// 	return -errno;
 }
 
 int ioqueues_init_thread(void)

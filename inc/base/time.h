@@ -23,6 +23,11 @@ static inline uint64_t microtime(void)
 	return (rdtsc() - start_tsc) / cycles_per_us;
 }
 
+static inline uint64_t nanotime(void)
+{
+	return (rdtsc() - start_tsc) * 1000ul / cycles_per_us;
+}
+
 extern void __time_delay_us(uint64_t us);
 
 /**

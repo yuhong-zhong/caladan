@@ -6,6 +6,7 @@
 #define __BASE_ASSERT_H
 
 #include <base/stddef.h>
+#include <signal.h>
 
 extern void logk_bug(bool fatal, const char *expr,
 		     const char *file, int line, const char *func);
@@ -42,6 +43,14 @@ extern void logk_bug(bool fatal, const char *expr,
 			         __FILE__, __LINE__, __func__);	\
 			__builtin_unreachable();		\
 		}						\
+	} while (0)
+
+#define RT_BUG_ON(cond)											\
+	do {												\
+		if (cond) {										\
+			log_err("BUG_ON: %s (L%d) %s", __FILE__, __LINE__, __FUNCTION__);	        \
+			raise(SIGABRT);									\
+		}											\
 	} while (0)
 
 /**

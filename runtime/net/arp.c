@@ -127,10 +127,23 @@ static void arp_send(uint16_t op, struct eth_addr dhost, uint32_t daddr)
 	struct mbuf *m;
 	struct arp_hdr *arp_hdr;
 	struct arp_hdr_ethip *arp_hdr_ethip;
+	struct kthread *k = myk();
 
 	m = net_tx_alloc_mbuf();
 	if (unlikely(!m))
 		return;
+
+	// log_info("arp: sending ARP packet IP %d.%d.%d.%d, MAC %x:%x:%x:%x:%x:%x",
+	// 	 ((daddr >> 24) & 0xff),
+	// 	 ((daddr >> 16) & 0xff),
+	// 	 ((daddr >> 8) & 0xff),
+	// 	 (daddr & 0xff),
+	// 	 dhost.addr[0],
+	// 	 dhost.addr[1],
+	// 	 dhost.addr[2],
+	// 	 dhost.addr[3],
+	// 	 dhost.addr[4],
+	// 	 dhost.addr[5]);
 
 	arp_hdr = mbuf_put_hdr(m, *arp_hdr);
 	arp_hdr->htype = hton16(ARP_HTYPE_ETHER);
@@ -140,12 +153,17 @@ static void arp_send(uint16_t op, struct eth_addr dhost, uint32_t daddr)
 	arp_hdr->op = hton16(op);
 
 	arp_hdr_ethip = mbuf_put_hdr(m, *arp_hdr_ethip);
-	arp_hdr_ethip->sender_mac = netcfg.mac;
+	arp_hdr_ethip->sender_mac = k->mac;
 	arp_hdr_ethip->sender_ip = hton32(netcfg.addr);
 	arp_hdr_ethip->target_mac = dhost;
 	arp_hdr_ethip->target_ip = hton32(daddr);
 
 	net_tx_eth(m, ETHTYPE_ARP, dhost);
+}
+
+void arp_send_garp()
+{
+	arp_send(ARP_OP_REPLY, eth_addr_broadcast, netcfg.addr);
 }
 
 static void arp_age_entry(uint64_t now_us, struct arp_entry *e)
@@ -280,6 +298,18 @@ void net_rx_arp(struct mbuf *m)
 	sender_ip = ntoh32(arp_hdr_ethip->sender_ip);
 	target_ip = ntoh32(arp_hdr_ethip->target_ip);
 	sender_mac = arp_hdr_ethip->sender_mac;
+
+	// log_info("arp: received ARP packet IP %d.%d.%d.%d, MAC %x:%x:%x:%x:%x:%x",
+	// 	 ((sender_ip >> 24) & 0xff),
+	// 	 ((sender_ip >> 16) & 0xff),
+	// 	 ((sender_ip >> 8) & 0xff),
+	// 	 (sender_ip & 0xff),
+	// 	 sender_mac.addr[0],
+	// 	 sender_mac.addr[1],
+	// 	 sender_mac.addr[2],
+	// 	 sender_mac.addr[3],
+	// 	 sender_mac.addr[4],
+	// 	 sender_mac.addr[5]);
 
 	/* refuse ARP packets with multicast source MAC's */
 	if (eth_addr_is_multicast(&sender_mac))

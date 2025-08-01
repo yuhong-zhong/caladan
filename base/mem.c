@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/syscall.h>
 #include <sys/mman.h>
+#include <x86intrin.h>
 
 #include <base/stddef.h>
 #include <base/mem.h>

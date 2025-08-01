@@ -12,6 +12,7 @@
 #include <base/pci.h>
 #include <iokernel/shm.h>
 #include <net/ethernet.h>
+#include <stdio.h>
 
 /*
  * WARNING: If you make any changes that impact the layout of
@@ -21,7 +22,114 @@
 #define CONTROL_HDR_VERSION 11
 
 /* The abstract namespace path for the control socket. */
-#define CONTROL_SOCK_PATH	"\0/control/iokernel.sock"
+// #define CONTROL_SOCK_PATH	"\0/control/iokernel.sock"
+#define CONTROL_SOCK_PATH_PREFIX	"\0/control/iokernel.sock"
+
+enum {
+	IOK_REGISTER_REGULAR = 0,
+	IOK_REGISTER_BACKUP,
+	IOK_FAILOVER,
+	IOK_FAILOVER_FORCE,
+	IOK_UPDATE_MAC,
+	IOK_KILL_ZOMBIE,
+};
+
+enum {
+	IOK_REGISTER_OK = 0,
+	IOK_REGISTER_SECONDARY,
+};
+
+/* IOK2IOK communication */
+
+#define IOK2IOK_DP_QUEUE_SIZE	(8192UL)
+#define IOK2IOK_CMD_QUEUE_SIZE	(512UL)
+
+#define IOK2IOK_DP_SHM_SIZE	(ROUND_UP(IOK2IOK_DP_QUEUE_SIZE * sizeof(struct lrpc_msg), PGSIZE_2MB))
+#define IOK2IOK_CMD_SHM_SIZE	(ROUND_UP(IOK2IOK_CMD_QUEUE_SIZE * sizeof(struct lrpc_msg), PGSIZE_2MB))
+#define IOK2IOK_TOTAL_SHM_SIZE	(4UL * IOK2IOK_DP_SHM_SIZE + 2UL * IOK2IOK_CMD_SHM_SIZE)
+
+#define MAX_NR_IOK2IOK		2UL
+
+// The iok2iok QP head pointers of a pmyiok must fit in a 2MB page
+BUILD_ASSERT(MAX_NR_IOK2IOK * 6 * CACHE_LINE_SIZE <= PGSIZE_2MB);
+
+/* primary iokernel */
+extern struct msg_chan_out iok_as_primary_rxq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_rxcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_txpktq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_primary_txcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+
+extern struct msg_chan_in iok_as_primary_cmdq_in[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_primary_cmdq_out[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+
+/* secondary iokernel */
+extern struct msg_chan_in iok_as_secondary_rxq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_rxcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_txpktq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_out iok_as_secondary_txcmdq[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+
+extern struct msg_chan_out iok_as_secondary_cmdq_out[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+extern struct msg_chan_in iok_as_secondary_cmdq_in[MAX_NR_IOK2IOK][MAX_NR_IOK2IOK];
+
+extern struct eth_addr pmyiok_mac_arr[MAX_NR_IOK2IOK];
+
+enum {
+	IOK2IOK_CMD_ADD_CLIENT = 0,
+	IOK2IOK_CMD_CXL_OFFSET,
+	IOK2IOK_CMD_CXL_LEN,
+	IOK2IOK_CMD_STATUS_CODE,
+	IOK2IOK_CMD_LRPC_FD,
+	IOK2IOK_CMD_PROC_IDX,
+	IOK2IOK_CMD_REMOVE_CLIENT,
+
+	IOK2IOK_CMD_BAK_ADD_CLIENT,
+	IOK2IOK_CMD_BAK_CXL_OFFSET,
+	IOK2IOK_CMD_BAK_CXL_LEN,
+	IOK2IOK_CMD_BAK_LRPC_FD,
+	IOK2IOK_CMD_BAK_PROC_IDX,
+	IOK2IOK_CMD_BAK_REMOVE_CLIENT,
+
+	IOK2IOK_CMD_GET_MAC,
+	IOK2IOK_CMD_REPLY_MAC,
+
+	IOK2IOK_CMD_NR,
+};
+
+#define IOK2IOK_RAWCMD_BITS 31ul
+#define IOK2IOK_GET_RAWCMD(cmd) ((cmd) & ((1ul << IOK2IOK_RAWCMD_BITS) - 1ul))
+#define IOK2IOK_GET_PROC_IDX(cmd) ((cmd) >> IOK2IOK_RAWCMD_BITS)
+#define IOK2IOK_MAKE_CMD(rawcmd, proc_idx) ((((uint64_t) proc_idx) << IOK2IOK_RAWCMD_BITS) | ((uint64_t) rawcmd))
+
+#define IOK2IOK_TS_CMD 0xfffffffffffffffUL
+
+extern uint64_t lat_hist_boundary_arr[];
+#define LAT_DIST_NUM_BINS 11
+
+extern uint64_t rx_pmyiok_to_seciok_lat_hist[LAT_DIST_NUM_BINS];
+extern uint64_t tx_seciok_to_pmyiok_lat_hist[LAT_DIST_NUM_BINS];
+
+// #define MEASURE_TS
+#define TS_COUNT_INTERVAL 500
+
+// assume that packet length is < 64KB
+#define IOK2IOK_TXPKT_MAKE_RAWCMD(len, olflags) (((uint32_t) len) | (((uint32_t) olflags) << 16u))
+#define IOK2IOK_TXPKT_GET_LEN(rawcmd) ((rawcmd) & 0xffffu)
+#define IOK2IOK_TXPKT_GET_OLFLAGS(rawcmd) ((rawcmd) >> 16u)
+
+#define IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, pmyiok_index, csum_type) (((uint32_t) len) | (((uint32_t) off) << 14u) | (((uint32_t) pmyiok_index) << 26u) | (((uint32_t) csum_type) << 30u))
+#define IOK2IOK_RXPKT_GET_LEN(rawcmd) ((rawcmd) & 0x3fffu)
+#define IOK2IOK_RXPKT_GET_OFF(rawcmd) (((rawcmd) >> 14u) & 0xfffu)
+#define IOK2IOK_RXPKT_GET_PMYIOK_INDEX(rawcmd) (((rawcmd) >> 26u) & 0xf)
+#define IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) ((rawcmd) >> 30u)
+
+BUILD_ASSERT(MAX_NR_IOK2IOK <= 0xf);
+
+#define IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss) (((uint64_t) shmptr) | (((uint64_t) rss) << 32ul))
+#define IOK2IOK_RXPKT_GET_SHMPTR(payload) ((shmptr_t) (payload & 0xfffffffful))
+#define IOK2IOK_RXPKT_GET_RSS(payload) ((uint32_t) (payload >> 32ul))
+
+// Leave 1b for parity
+BUILD_ASSERT(IOK2IOK_RAWCMD_BITS + 4 * 8 + 1 <= sizeof(uint64_t) * 8);
 
 /* describes a queue */
 struct q_ptrs {
@@ -104,6 +212,9 @@ struct sched_spec {
 	uint64_t		qdelay_us;
 	uint64_t		ht_punish_us;
 	uint64_t		quantum_us;
+#ifdef NO_SCHED
+	DEFINE_BITMAP(rt_cores, NCPU);
+#endif
 };
 
 #define CONTROL_HDR_MAGIC	0x696f6b3a /* "iok:" */
@@ -138,6 +249,8 @@ struct iokernel_info {
 	bool			external_directpath_enabled;
 	bool			external_directpath_rmp;
 	bool			transparent_hugepages;
+	uint64_t		rx_cxl_shm_offset;
+	uint64_t		magic_number;
 };
 
 BUILD_ASSERT(sizeof(struct iokernel_info) <= IOKERNEL_INFO_SIZE);

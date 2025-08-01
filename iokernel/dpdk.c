@@ -41,6 +41,7 @@
 #include <rte_ethdev.h>
 #include <rte_ether.h>
 #include <rte_lcore.h>
+#include <rte_pdump.h>
 
 #include <base/log.h>
 
@@ -50,7 +51,7 @@
 #define RX_RING_SIZE 256
 #define TX_RING_SIZE 256
 
-#define IOKERNEL_MTU 1500
+#define IOKERNEL_MTU 9000
 
 #define MLX5_RX_RING_SIZE 2048
 #define MLX5_TX_RING_SIZE 2048
@@ -60,6 +61,9 @@ struct pci_addr nic_pci_addr;
 
 char **dpdk_argv;
 int dpdk_argc;
+
+struct rte_eth_rss_conf rss_conf;
+bool rss_conf_present;
 
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {
@@ -78,6 +82,8 @@ static const struct rte_eth_conf port_conf_default = {
 	},
 };
 
+int noinline_flag;
+
 /*
  * Initializes a given port using global settings and with the RX buffers
  * coming from the mbuf_pool passed as a parameter.
@@ -91,9 +97,6 @@ static inline int dpdk_port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	int retval;
 	uint16_t q;
 	struct rte_eth_dev_info dev_info;
-#if 0
-	struct rte_eth_rss_conf rss_conf;
-#endif
 	struct rte_eth_txconf *txconf;
 	struct rte_eth_rxconf *rxconf;
 
@@ -147,6 +150,13 @@ static inline int dpdk_port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 			return retval;
 	}
 
+	static const struct rte_mbuf_dynflag rte_noinline = {
+		.name = "mlx5_fine_granularity_inline",
+	};
+	noinline_flag = rte_mbuf_dynflag_register(&rte_noinline);
+	RT_BUG_ON(noinline_flag < 0);
+	log_info("dpdk: registered noinline flag %d", noinline_flag);
+
 	/* Start the Ethernet port. */
 	retval = rte_eth_dev_start(port);
 	if (retval < 0)
@@ -177,20 +187,18 @@ static inline int dpdk_port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 
 	/* Enable RX in promiscuous mode for the Ethernet device. */
 	rte_eth_promiscuous_enable(port);
-#if 0
+
 	/* record the RSS hash key */
 	rss_conf.rss_key = iok_info->rss_key;
 	rss_conf.rss_key_len = ARRAY_SIZE(iok_info->rss_key);
-	if (strncmp(dev_info.driver_name, "net_mlx4", 8)) {
-		retval = rte_eth_dev_rss_hash_conf_get(port, &rss_conf);
-		if (retval < 0)
-			return retval;
-
-		if (rss_conf.rss_key_len != ARRAY_SIZE(iok_info->rss_key)) {
-			log_warn("WARNING: unexpected key length %d, advanced flow steering may not work");
-		}
+	retval = rte_eth_dev_rss_hash_conf_get(port, &rss_conf);
+	if (retval == 0) {
+		rss_conf_present = true;
+		if (rss_conf.rss_key_len != ARRAY_SIZE(iok_info->rss_key))
+			log_warn("WARNING: unexpected RSS key size");
+	} else {
+		log_warn("Couldn't query RSS parameters");
 	}
-#endif
 
 	return 0;
 }
@@ -224,9 +232,10 @@ int dpdk_init(void)
 {
 	unsigned int max_args;
 	char buf[10], **argv;
+	char file_prefix[10];
 	int i, ret, argc = 0;
 
-	max_args = 7 + dpdk_argc;
+	max_args = 9 + dpdk_argc;
 	argv = malloc(max_args * sizeof(char *));
 	if (!argv)
 		return -ENOMEM;
@@ -260,8 +269,13 @@ int dpdk_init(void)
 		ARGV("--allow");
 		ARGV(nic_pci_addr_str);
 	} else {
-		ARGV("--vdev=net_tap0");
+		// ARGV("--vdev=net_tap0");
 	}
+
+	// enable multiple iokernels on the same host
+	sprintf(file_prefix, "%d", cfg.socket_index);
+	ARGV("--file-prefix");
+	ARGV(file_prefix);
 
 	/* include any user-supplied arguments */
 	for (i = 0; i < dpdk_argc; i++)
@@ -286,6 +300,10 @@ int dpdk_init(void)
 	if (rte_lcore_count() > 1)
 		log_warn("dpdk: too many lcores enabled, only 1 used");
 
+	// TODO: enable pdump
+	// ret = rte_pdump_init();
+	// RT_BUG_ON(ret < 0);
+
 	return 0;
 }
 
@@ -294,6 +312,8 @@ int dpdk_init(void)
  */
 int dpdk_late_init(void)
 {
+	if (cfg.is_secondary)
+		return 0;
 
 	if (cfg.vfio_directpath)
 		return 0;

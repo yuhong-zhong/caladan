@@ -5,12 +5,16 @@
 #include <unistd.h>
 
 #include <rte_ether.h>
+#include <rte_flow.h>
 #include <rte_hash.h>
 #include <rte_jhash.h>
 #include <rte_lcore.h>
+#include <rte_ethdev.h>
 
 #include <base/log.h>
 #include <base/lrpc.h>
+
+#include <iokernel/queue.h>
 
 #include "defs.h"
 #include "sched.h"
@@ -22,6 +26,78 @@ static struct lrpc_chan_in lrpc_control_to_data;
 
 static void dp_clients_remove_client(struct proc *p);
 
+extern struct rte_eth_rss_conf rss_conf;
+extern bool rss_conf_present;
+
+static int dp_clients_setup_flow_tags(struct proc *p)
+{
+	int ret;
+
+	struct rte_flow_action actions[3];
+	struct rte_flow_action_mark mark_action;
+	struct rte_flow_action_rss rss;
+	struct rte_flow_attr attr;
+	struct rte_flow_item pattern[2];
+	struct rte_flow_item_ipv4 ip;
+	struct rte_flow_item_ipv4 ip_mask;
+	uint16_t queue = 0;
+
+	if (!rss_conf_present)
+		return 0;
+
+	memset(&attr, 0, sizeof(attr));
+	attr.ingress = 1;
+
+	memset(&ip, 0, sizeof(ip));
+	ip.hdr.dst_addr = htobe32(p->ip_addr);
+
+	memset(&ip_mask, 0, sizeof(ip_mask));
+	ip_mask.hdr.dst_addr = UINT32_MAX;
+
+	memset(&rss, 0, sizeof(rss));
+	rss.types = rss_conf.rss_hf;
+	rss.key_len = rss_conf.rss_key_len;
+	rss.key = rss_conf.rss_key;
+	rss.queue_num = 1;
+	rss.queue = &queue;
+
+	memset(&mark_action, 0, sizeof(mark_action));
+	mark_action.id = p->uniqid;
+
+	memset(pattern, 0, sizeof(pattern));
+	pattern[0].type = RTE_FLOW_ITEM_TYPE_IPV4;
+	pattern[0].spec = &ip;
+	pattern[0].mask = &ip_mask;
+	pattern[1].type = RTE_FLOW_ITEM_TYPE_END;
+
+	memset(actions, 0, sizeof(actions));
+	actions[0].type = RTE_FLOW_ACTION_TYPE_RSS;
+	actions[0].conf = &rss;
+	actions[1].type = RTE_FLOW_ACTION_TYPE_MARK;
+	actions[1].conf = &mark_action;
+	actions[2].type = RTE_FLOW_ACTION_TYPE_END;
+
+	ret = rte_flow_validate(dp.port, &attr, pattern, actions, NULL);
+	if (unlikely(ret))
+		return ret;
+	p->flow = rte_flow_create(dp.port, &attr, pattern, actions, NULL);
+	if (unlikely(!p->flow))
+		return -1;
+	return 0;
+}
+
+static void dp_clients_destroy_flow_tags(struct proc *p)
+{
+	int ret;
+
+	if (unlikely(!p->flow))
+		return;
+
+	ret = rte_flow_destroy(dp.port, p->flow, NULL);
+	if (unlikely(ret))
+		log_err("dp_clients: failed to remove HW flow rule");
+}
+
 /*
  * Add a new client.
  */
@@ -29,10 +105,11 @@ static void dp_clients_add_client(struct proc *p)
 {
 	int ret;
 
-	if (!sched_attach_proc(p)) {
+	if (p->is_remote || !sched_attach_proc(p)) {
 		p->kill = false;
 		p->dp_clients_idx = dp.nr_clients;
 		dp.clients[dp.nr_clients++] = p;
+		dp.clients_by_id[p->uniqid] = p;
 	} else {
 		log_err("dp_clients: failed to attach proc.");
 		p->attach_fail = true;
@@ -67,6 +144,9 @@ static void dp_clients_add_client(struct proc *p)
 			goto fail_extmem;
 		}
 #pragma GCC diagnostic pop
+		ret = dp_clients_setup_flow_tags(p);
+		if (ret < 0)
+			log_warn("dp_clients: failed to setup flow tag");
 	}
 
 	if (p->has_vfio_directpath)
@@ -86,6 +166,7 @@ void proc_release(struct ref *r)
 	ssize_t ret;
 
 	struct proc *p = container_of(r, struct proc, ref);
+	log_info("proc_release: releasing proc %d", p->pid);
 	if (!lrpc_send(&lrpc_data_to_control, CONTROL_PLANE_REMOVE_CLIENT,
 			(unsigned long) p))
 		log_err("dp_clients: failed to inform control of client removal");
@@ -101,8 +182,11 @@ static void dp_clients_remove_client(struct proc *p)
 {
 	int ret;
 
+	log_info("dp_clients: removing client %d", p->pid);
+
 	dp.clients[p->dp_clients_idx] = dp.clients[--dp.nr_clients];
 	dp.clients[p->dp_clients_idx]->dp_clients_idx = p->dp_clients_idx;
+	dp.clients_by_id[p->uniqid] = NULL;
 
 	ret = rte_hash_del_key(dp.ip_to_proc, &p->ip_addr);
 	if (ret < 0)
@@ -120,6 +204,8 @@ static void dp_clients_remove_client(struct proc *p)
 			ret = rte_extmem_unregister(p->region.base, p->region.len);
 			if (ret < 0)
 				log_err("dp_clients: failed to unregister extmem for client");
+
+			dp_clients_destroy_flow_tags(p);
 		}
 
 	}
@@ -133,8 +219,68 @@ static void dp_clients_remove_client(struct proc *p)
 	p->kill = true;
 	if (p->has_vfio_directpath)
 		directpath_dataplane_notify_kill(p);
-	sched_detach_proc(p);
+	if (!p->is_remote)
+		sched_detach_proc(p);
+	log_info("dp_clients: remaining refcnt for client %d = %d", p->pid, p->ref.cnt);
 	proc_put(p);
+
+	log_info("dp_clients: removed client %d", p->pid);
+}
+
+static void dp_clients_update_mac(struct proc *p)
+{
+	bool success;
+
+	log_info("dp_clients: update mac for client %d", p->pid);
+	for (uint16_t tid = 0; tid < p->thread_count; tid++) {
+		unsigned long payload = RX_UPDATE_MAC_MAKE_PAYLOAD(eth_addr_to_uint64(&pmyiok_mac_arr[p->cur_pmyiok_index]), (uint64_t) p->cur_pmyiok_index);
+		RT_BUG_ON(RX_UPDATE_MAC_GET_PMYIOK_INDEX(payload) != p->cur_pmyiok_index);
+		RT_BUG_ON(RX_UPDATE_MAC_GET_ETH_ADDR(payload) != eth_addr_to_uint64(&pmyiok_mac_arr[p->cur_pmyiok_index]));
+		success = lrpc_send(&p->threads[tid].rxq, RX_UPDATE_MAC, payload);
+		if (!success) {
+			log_err("dp_clients: failed to update MAC address for thread %d of process %d", tid, p->pid);
+		}
+	}
+}
+
+static void dp_clients_failover(struct proc *p, bool force)
+{
+	log_info("dp_clients: failover for client %d", p->pid);
+
+	if (p->bak_pmyiok_index == MAX_NR_IOK2IOK) {
+		log_err("dp_clients: failover for client %d: no backup PMYIOK index", p->pid);
+		return;
+	}
+
+	if (p->zombie_pmyiok_index != MAX_NR_IOK2IOK) {
+		log_info("dp_clients: failover for client %d: existing zombie PMYIOK index %d", p->pid, p->zombie_pmyiok_index);
+		return;
+	}
+
+	if (force) {
+		// trigger GARP to route traffic to the new PMYIOK with existing MAC address
+		dp_clients_update_mac(p);
+	}
+
+	p->zombie_pmyiok_index = p->cur_pmyiok_index;
+	p->zombie_lrpc_control_fd = p->lrpc_control_fd;
+	p->zombie_iok2iok_index = p->iok2iok_index;
+
+	p->cur_pmyiok_index = p->bak_pmyiok_index;
+	p->lrpc_control_fd = p->bak_lrpc_control_fd;
+	p->iok2iok_index = p->bak_iok2iok_index;
+
+	p->bak_pmyiok_index = MAX_NR_IOK2IOK;
+	p->bak_lrpc_control_fd = -1;
+	p->bak_iok2iok_index = 0;
+
+	if (force) {
+		p->force_failover = true;
+		log_info("dp_clients: failover for client %d: force failover", p->pid);
+	} else {
+		dp_clients_update_mac(p);
+	}
+	log_info("dp_clients: failover for client %d: switched to PMYIOK %d", p->pid, p->cur_pmyiok_index);
 }
 
 /*
@@ -154,10 +300,21 @@ void dp_clients_rx_control_lrpcs(void)
 		switch (cmd)
 		{
 		case DATAPLANE_ADD_CLIENT:
+			RT_BUG_ON(cfg.is_secondary);
 			dp_clients_add_client(p);
 			break;
 		case DATAPLANE_REMOVE_CLIENT:
+			RT_BUG_ON(cfg.is_secondary);
 			dp_clients_remove_client(p);
+			break;
+		case DATAPLANE_FAILOVER:
+		case DATAPLANE_FAILOVER_FORCE:
+			RT_BUG_ON(!cfg.is_secondary);
+			dp_clients_failover(p, cmd == DATAPLANE_FAILOVER_FORCE);
+			break;
+		case DATAPLANE_UPDATE_MAC:
+			RT_BUG_ON(!cfg.is_secondary);
+			dp_clients_update_mac(p);
 			break;
 		default:
 			log_err("dp_clients: received unrecognized command %lu", cmd);
@@ -176,8 +333,8 @@ int dp_clients_init(void)
 	struct rte_hash_parameters hash_params = { 0 };
 
 	ret = lrpc_init_in(&lrpc_control_to_data,
-			lrpc_control_to_data_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
-			lrpc_control_to_data_params.wb);
+		lrpc_control_to_data_params.buffer, CONTROL_DATAPLANE_QUEUE_SIZE,
+		lrpc_control_to_data_params.wb);
 	if (ret < 0) {
 		log_err("dp_clients: initializing LRPC from control plane failed");
 		return -1;

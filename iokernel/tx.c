@@ -44,46 +44,46 @@ static inline struct tx_pktmbuf_priv *tx_pktmbuf_get_priv(struct rte_mbuf *buf)
 /*
  * Prepare rte_mbuf struct for transmission.
  */
-static void tx_prepare_tx_mbuf(struct rte_mbuf *buf,
-			       const struct tx_net_hdr *net_hdr,
-			       struct thread *th)
+static void tx_prepare_tx_mbuf(struct rte_mbuf *buf, struct tx_net_hdr *net_hdr,
+			       unsigned short len, unsigned short olflags,
+			       struct thread *th, struct proc *p)
 {
-	struct proc *p = th->p;
 	uint32_t page_number;
 	struct tx_pktmbuf_priv *priv_data;
 
 	/* initialize mbuf to point to net_hdr->payload */
-	buf->buf_addr = (char *)net_hdr->payload;
+	buf->buf_addr = ((char *) net_hdr) + sizeof(*net_hdr);
 	page_number = PGN_2MB((uintptr_t)buf->buf_addr - (uintptr_t)p->region.base);
 	buf->buf_iova = p->page_paddrs[page_number] + PGOFF_2MB(buf->buf_addr);
 	buf->data_off = 0;
 	rte_mbuf_refcnt_set(buf, 1);
 
-	buf->buf_len = net_hdr->len;
-	buf->pkt_len = net_hdr->len;
-	buf->data_len = net_hdr->len;
+	buf->buf_len = len;
+	buf->pkt_len = len;
+	buf->data_len = len;
 
 	buf->ol_flags = 0;
-	if (net_hdr->olflags != 0) {
-		if (net_hdr->olflags & OLFLAG_IP_CHKSUM)
+	if (olflags != 0) {
+		if (olflags & OLFLAG_IP_CHKSUM)
 			buf->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
-		if (net_hdr->olflags & OLFLAG_TCP_CHKSUM)
+		if (olflags & OLFLAG_TCP_CHKSUM)
 			buf->ol_flags |= RTE_MBUF_F_TX_TCP_CKSUM;
-		if (net_hdr->olflags & OLFLAG_IPV4)
+		if (olflags & OLFLAG_IPV4)
 			buf->ol_flags |= RTE_MBUF_F_TX_IPV4;
-		if (net_hdr->olflags & OLFLAG_IPV6)
+		if (olflags & OLFLAG_IPV6)
 			buf->ol_flags |= RTE_MBUF_F_TX_IPV6;
 
 		buf->l4_len = sizeof(struct rte_tcp_hdr);
 		buf->l3_len = sizeof(struct rte_ipv4_hdr);
 		buf->l2_len = RTE_ETHER_HDR_LEN;
 	}
+	buf->ol_flags |= noinline_flag;
 
 	/* initialize the private data, used to send completion events */
 	priv_data = tx_pktmbuf_get_priv(buf);
 	priv_data->p = p;
 	priv_data->th = th;
-	priv_data->completion_data = net_hdr->completion_data;
+	priv_data->completion_data = (unsigned long) ptr_to_shmptr(&p->region, net_hdr, sizeof(*net_hdr));
 
 #ifdef MLX
 	/* initialize private data used by Mellanox driver to register memory */
@@ -97,16 +97,10 @@ static void tx_prepare_tx_mbuf(struct rte_mbuf *buf,
 /*
  * Send a completion event to the runtime for the mbuf pointed to by obj.
  */
-bool tx_send_completion(void *obj)
+static bool __tx_send_completion(struct proc *p, struct thread *th, unsigned long completion_data)
 {
-	struct rte_mbuf *buf;
-	struct tx_pktmbuf_priv *priv_data;
-	struct thread *th;
-	struct proc *p;
-
-	buf = (struct rte_mbuf *)obj;
-	priv_data = tx_pktmbuf_get_priv(buf);
-	p = priv_data->p;
+	struct msg_chan_out *chan;
+	bool succeeded;
 
 	/* during initialization, the mbufs are enqueued for the first time */
 	if (unlikely(!p))
@@ -118,16 +112,28 @@ bool tx_send_completion(void *obj)
 		return true; /* no need to send a completion */
 	}
 
+	if (p->is_remote) {
+		RT_BUG_ON(cfg.is_secondary);
+		chan = &iok_as_primary_rxcmdq[cfg.pmyiok_index][p->seciok_index];
+
+		log_debug_duration(succeeded = msg_send(chan, IOK2IOK_MAKE_CMD(RX_NET_COMPLETE, p->iok2iok_index), completion_data));
+		if (unlikely(!succeeded)) {
+			log_err_ratelimited("tx: failed to send completion to secondary iokernel");
+			proc_put(p);
+			return false;
+		}
+		goto success;
+	}
+
 	/* send completion to runtime */
-	th = priv_data->th;
 	if (th->active) {
 		if (likely(lrpc_send(&th->rxq, RX_NET_COMPLETE,
-			       priv_data->completion_data))) {
+				     completion_data))) {
 			goto success;
 		}
 	} else {
 		if (likely(rx_send_to_runtime(p, p->next_thread_rr++, RX_NET_COMPLETE,
-					priv_data->completion_data))) {
+					      completion_data))) {
 			goto success;
 		}
 	}
@@ -140,8 +146,8 @@ bool tx_send_completion(void *obj)
 	if (!p->nr_overflows)
 		list_add(&overflow_procs, &p->overflow_link);
 
-	p->overflow_queue[p->nr_overflows++] = priv_data->completion_data;
-	log_debug_ratelimited("tx: failed to send completion to runtime");
+	p->overflow_queue[p->nr_overflows++] = completion_data;
+	log_warn_ratelimited("tx: failed to send completion to runtime");
 	STAT_INC(COMPLETION_ENQUEUED, -1);
 	STAT_INC(TX_COMPLETION_OVERFLOW, 1);
 
@@ -150,6 +156,21 @@ success:
 	proc_put(p);
 	STAT_INC(COMPLETION_ENQUEUED, 1);
 	return true;
+}
+
+bool tx_send_completion(void *obj)
+{
+	struct rte_mbuf *buf;
+	struct tx_pktmbuf_priv *priv_data;
+	struct thread *th;
+	struct proc *p;
+
+	buf = (struct rte_mbuf *)obj;
+	priv_data = tx_pktmbuf_get_priv(buf);
+	p = priv_data->p;
+	th = priv_data->th;
+
+	return __tx_send_completion(p, th, priv_data->completion_data);
 }
 
 static int drain_overflow_queue(struct proc *p, int n)
@@ -166,11 +187,56 @@ static int drain_overflow_queue(struct proc *p, int n)
 	return i;
 }
 
+static int tx_drain_completions_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_index)
+{
+	uint64_t cmd, raw_cmd;
+	uint16_t iok2iok_proc_index;
+	unsigned long completion_data;
+	struct proc *p;
+	int i;
+	struct tx_net_hdr *hdr;
+	struct thread *th;
+
+	for (i = 0; i < n; ++i) {
+		bool success;
+		log_debug_duration(success = msg_recv(chan, &cmd, &completion_data));
+		if (!success)
+			break;
+
+		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
+		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
+		RT_BUG_ON(raw_cmd != RX_NET_COMPLETE);
+
+		p = iok2iok_proc_as_seciok[pmyiok_index][iok2iok_proc_index];
+		RT_BUG_ON(!p);
+
+		// TODO: a hack based on the knowledge that completion_data is hdr
+		hdr = shmptr_to_ptr(&p->region, completion_data, sizeof(*hdr));
+		th = (struct thread *) hdr->private_seciok;
+
+		// TODO: check the output?
+		__tx_send_completion(p, th, completion_data);
+	}
+	return i;
+}
+
 bool tx_drain_completions(void)
 {
+	int drained_pmyiok = 0;
 	size_t drained = 0;
 	struct proc *p, *p_next;
 	struct list_head done;
+
+	// piggypack the tx completion path of the secondary iokernel here
+	if (cfg.is_secondary) {
+		for (int i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			if (drained_pmyiok >= IOKERNEL_TX_BURST_SIZE)
+				break;
+			drained_pmyiok += tx_drain_completions_from_pmyiok(
+				&iok_as_secondary_rxcmdq[i][cfg.seciok_index], IOKERNEL_TX_BURST_SIZE - drained_pmyiok, i
+			);
+		}
+	}
 
 	if (list_empty(&overflow_procs))
 		return false;
@@ -196,13 +262,15 @@ bool tx_drain_completions(void)
 }
 
 static int tx_drain_queue(struct thread *t, int n,
-			  const struct tx_net_hdr **hdrs)
+			  struct tx_net_hdr **hdrs, int *proc_pmyiok_indices)
 {
 	int i;
 
 	for (i = 0; i < n; i++) {
 		uint64_t cmd;
 		unsigned long payload;
+		uint64_t txpkt_cmd;
+		uint32_t aux;
 
 		if (!lrpc_recv(&t->txpktq, &cmd, &payload)) {
 			if (unlikely(!t->active))
@@ -210,8 +278,12 @@ static int tx_drain_queue(struct thread *t, int n,
 			break;
 		}
 
+		txpkt_cmd = TXPKT_GET_CMD(cmd);
+		aux = TXPKT_GET_AUX(cmd);
+
 		/* TODO: need to kill the process? */
-		BUG_ON(cmd != TXPKT_NET_XMIT);
+		BUG_ON(txpkt_cmd != TXPKT_NET_XMIT);
+		proc_pmyiok_indices[i] = (int) aux;
 
 		hdrs[i] = shmptr_to_ptr(&t->p->region, payload,
 					sizeof(struct tx_net_hdr));
@@ -222,15 +294,83 @@ static int tx_drain_queue(struct thread *t, int n,
 	return i;
 }
 
+static int tx_drain_queue_from_seciok(struct msg_chan_in *chan, int n,
+				      struct tx_net_hdr **hdrs, unsigned short *lens,
+				      unsigned short *olflags, struct proc **procs)
+{
+	int i;
+	struct proc *p;
+
+	for (i = 0; i < n; i++) {
+		uint64_t cmd, raw_cmd;
+		uint16_t iok2iok_proc_index;
+		unsigned long payload;
+		bool success;
+
+		log_debug_duration(success = msg_recv(chan, &cmd, &payload));
+		if (!success)
+			break;
+
+		raw_cmd = IOK2IOK_GET_RAWCMD(cmd);
+		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
+
+		lens[i] = IOK2IOK_TXPKT_GET_LEN(raw_cmd);
+		olflags[i] = IOK2IOK_TXPKT_GET_OLFLAGS(raw_cmd);
+
+		p = iok2iok_proc_as_pmyiok[iok2iok_proc_index];
+		RT_BUG_ON(!p);
+		RT_BUG_ON(!p->is_remote);
+
+		hdrs[i] = shmptr_to_ptr(&p->region, payload,
+					sizeof(struct tx_net_hdr));
+		RT_BUG_ON(!hdrs[i]);
+		procs[i] = p;
+	}
+	return i;
+}
+
+static void txpkt_send_to_pmyiok(struct tx_net_hdr **hdrs, struct thread **threads, int *proc_pmyiok_indices, int n)
+{
+	int i;
+	shmptr_t shmptr;
+	uint16_t iok2iok_proc_index;
+	struct proc *p;
+	bool success;
+	struct msg_chan_out *chan;
+
+	for (i = 0; i < n; i++) {
+		if (i + TX_PREFETCH_STRIDE < n)
+			prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
+
+		p = threads[i]->p;
+		iok2iok_proc_index = p->iok2iok_index;
+
+		hdrs[i]->private_seciok = (unsigned long) threads[i];
+		proc_get(p);
+
+		chan = &iok_as_secondary_txpktq[proc_pmyiok_indices[i]][cfg.seciok_index];
+
+		shmptr = ptr_to_shmptr(&p->region, (void *) hdrs[i], sizeof(*hdrs[i]));
+		log_debug_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(IOK2IOK_TXPKT_MAKE_RAWCMD(hdrs[i]->len, hdrs[i]->olflags), iok2iok_proc_index), shmptr));
+		if (unlikely(!success)) {
+			log_warn_ratelimited("txpkt_send_to_pmyiok: failed to send to primary iokernel");
+			break;
+		}
+	}
+}
 
 /*
  * Process a batch of outgoing packets.
  */
 bool tx_burst(void)
 {
-	const struct tx_net_hdr *hdrs[IOKERNEL_TX_BURST_SIZE];
+	struct tx_net_hdr *hdrs[IOKERNEL_TX_BURST_SIZE];
+	unsigned short lens[IOKERNEL_TX_BURST_SIZE];
+	unsigned short olflags[IOKERNEL_TX_BURST_SIZE];
+	int proc_pmyiok_indices[IOKERNEL_TX_BURST_SIZE];
 	static struct rte_mbuf *bufs[IOKERNEL_TX_BURST_SIZE];
 	struct thread *threads[IOKERNEL_TX_BURST_SIZE];
+	struct proc *procs[IOKERNEL_TX_BURST_SIZE];
 	int i, j, ret, pulltotal = 0;
 	static unsigned int pos = 0, n_pkts = 0, n_bufs = 0;
 	struct thread *t;
@@ -243,13 +383,34 @@ bool tx_burst(void)
 		unsigned int idx = (pos + i) % nrts;
 		t = ts[idx];
 		ret = tx_drain_queue(t, IOKERNEL_TX_BURST_SIZE - n_pkts,
-				     &hdrs[n_pkts]);
-		for (j = n_pkts; j < n_pkts + ret; j++)
+				     &hdrs[n_pkts], &proc_pmyiok_indices[n_pkts]);
+		for (j = n_pkts; j < n_pkts + ret; j++) {
 			threads[j] = t;
+			procs[j] = t->p;
+			// TODO: could use prefetching to optimize this part
+			if (!cfg.is_secondary) {
+				lens[j] = hdrs[j]->len;
+				olflags[j] = hdrs[j]->olflags;
+			} else if (procs[j]->force_failover) {
+				// override the pmyiok index to the current pmyiok index
+				proc_pmyiok_indices[j] = t->p->cur_pmyiok_index;
+			}
+		}
 		n_pkts += ret;
 		pulltotal += ret;
 		if (n_pkts >= IOKERNEL_TX_BURST_SIZE)
 			goto full;
+	}
+
+	if (!cfg.is_secondary) {
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			if (n_pkts >= IOKERNEL_TX_BURST_SIZE)
+				break;
+			ret = tx_drain_queue_from_seciok(&iok_as_primary_txpktq[cfg.pmyiok_index][i], IOKERNEL_TX_BURST_SIZE - n_pkts,
+							 &hdrs[n_pkts], &lens[n_pkts], &olflags[n_pkts], &procs[n_pkts]);
+			n_pkts += ret;
+			pulltotal += ret;
+		}
 	}
 
 	if (n_pkts == 0)
@@ -260,6 +421,15 @@ bool tx_burst(void)
 full:
 
 	stats[TX_PULLED] += pulltotal;
+
+	if (cfg.is_secondary) {
+		txpkt_send_to_pmyiok(hdrs, threads, proc_pmyiok_indices, n_pkts);
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			msg_out_sync(&iok_as_secondary_txpktq[i][cfg.seciok_index]);
+		}
+		n_pkts = 0;
+		return true;
+	}
 
 	/* allocate mbufs */
 	if (n_pkts - n_bufs > 0) {
@@ -274,15 +444,21 @@ full:
 
 	/* fill in packet metadata */
 	for (i = n_bufs; i < n_pkts; i++) {
-		if (i + TX_PREFETCH_STRIDE < n_pkts)
-			prefetch(hdrs[i + TX_PREFETCH_STRIDE]);
-		tx_prepare_tx_mbuf(bufs[i], hdrs[i], threads[i]);
+		tx_prepare_tx_mbuf(bufs[i], hdrs[i], lens[i], olflags[i], threads[i], procs[i]);
+#ifdef NO_CACHE_COHERENCE
+		// batch_clflushopt(bufs[i]->buf_addr, bufs[i]->buf_len);
+		clflushopt(bufs[i]->buf_addr);
+		clflushopt(bufs[i]->buf_addr + CACHE_LINE_SIZE);
+#endif
 	}
+#ifdef NO_CACHE_COHERENCE
+	_mm_mfence();
+#endif
 
 	n_bufs = n_pkts;
 
 	/* finally, send the packets on the wire */
-	ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts);
+	log_info_throughput(ret = rte_eth_tx_burst(dp.port, 0, bufs, n_pkts), ret);
 	log_debug("tx: transmitted %d packets on port %d", ret, dp.port);
 
 	/* apply back pressure if the NIC TX ring was full */
@@ -291,6 +467,8 @@ full:
 		n_pkts -= ret;
 		for (i = 0; i < n_pkts; i++)
 			bufs[i] = bufs[ret + i];
+		log_warn_ratelimited("tx: rte_eth_tx_burst failed to send %d out of %d packets",
+				     n_pkts, n_pkts + ret);
 	} else {
 		n_pkts = 0;
 	}
@@ -368,14 +546,16 @@ int tx_init(void)
 	if (cfg.vfio_directpath)
 		return 0;
 
-	/* create a mempool to hold struct rte_mbufs and handle completions */
-	tx_mbuf_pool = tx_pktmbuf_completion_pool_create("TX_MBUF_POOL",
-			IOKERNEL_NUM_COMPLETIONS, sizeof(struct tx_pktmbuf_priv),
-			rte_socket_id());
+	if (!cfg.is_secondary) {
+		/* create a mempool to hold struct rte_mbufs and handle completions */
+		tx_mbuf_pool = tx_pktmbuf_completion_pool_create("TX_MBUF_POOL",
+				IOKERNEL_NUM_COMPLETIONS, sizeof(struct tx_pktmbuf_priv),
+				rte_socket_id());
 
-	if (tx_mbuf_pool == NULL) {
-		log_err("tx: couldn't create tx mbuf pool");
-		return -1;
+		if (tx_mbuf_pool == NULL) {
+			log_err("tx: couldn't create tx mbuf pool");
+			return -1;
+		}
 	}
 
 	return 0;

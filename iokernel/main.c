@@ -8,6 +8,7 @@
 #include <base/init.h>
 #include <base/log.h>
 #include <base/stddef.h>
+#include <iokernel/control.h>
 
 #include <sys/utsname.h>
 
@@ -43,6 +44,7 @@ static const struct init_entry iok_init_handlers[] = {
 	IOK_INITIALIZER(base),
 
 	/* general iokernel */
+	IOK_INITIALIZER(cxl),
 	IOK_INITIALIZER(ksched),
 	IOK_INITIALIZER(sched),
 	IOK_INITIALIZER(simple),
@@ -69,12 +71,12 @@ static int run_init_handlers(const char *phase, const struct init_entry *h,
 {
 	int i, ret;
 
-	log_debug("entering '%s' init phase", phase);
+	log_info("entering '%s' init phase", phase);
 	for (i = 0; i < nr; i++) {
-		log_debug("init -> %s", h[i].name);
+		log_info("init -> %s", h[i].name);
 		ret = h[i].init();
 		if (ret) {
-			log_debug("failed, ret = %d", ret);
+			log_info("failed, ret = %d", ret);
 			return ret;
 		}
 	}
@@ -113,32 +115,106 @@ static void dataplane_loop_vfio(void)
 	}
 }
 
+#ifdef MEASURE_TS
+uint64_t lat_hist_boundary_arr[] = {500UL, 600UL, 700UL, 800UL, 900UL, 1000UL, 2000UL, 3000UL, 4000UL, 5000UL};
+static_assert(((sizeof(lat_hist_boundary_arr) / sizeof(*lat_hist_boundary_arr)) + 1) == LAT_DIST_NUM_BINS,
+	"lat_hist_boundary_arr does not match with LAT_DIST_NUM_BINS");
+
+static void print_lat_hist(uint64_t *hist) {
+	for (int i = 0; i < LAT_DIST_NUM_BINS; i++) {
+		log_info("lat_hist[<= %d]:\t%lu", i < LAT_DIST_NUM_BINS - 1 ? (int) lat_hist_boundary_arr[i] : -1, hist[i]);
+		hist[i] = 0;
+	}
+	log_info("--------------------------------");
+}
+
+uint64_t rx_pmyiok_to_seciok_lat_hist[LAT_DIST_NUM_BINS];
+uint64_t tx_seciok_to_pmyiok_lat_hist[LAT_DIST_NUM_BINS];
+#endif
 /*
  * The main dataplane thread.
  */
 void dataplane_loop(void)
 {
 	bool work_done;
+	int i;
 #if 0
 	uint64_t next_log_time = microtime();
+#endif
+
+#ifdef MEASURE_TS
+	memset(rx_pmyiok_to_seciok_lat_hist, 0, sizeof(rx_pmyiok_to_seciok_lat_hist));
+	memset(tx_seciok_to_pmyiok_lat_hist, 0, sizeof(tx_seciok_to_pmyiok_lat_hist));
 #endif
 
 	/*
 	 * Check that the port is on the same NUMA node as the polling thread
 	 * for best performance.
 	 */
-	if (rte_eth_dev_socket_id(dp.port) > 0
-			&& rte_eth_dev_socket_id(dp.port) != (int) rte_socket_id())
-		log_warn("main: port %u is on remote NUMA node to polling thread.\n\t"
-				"Performance will not be optimal.", dp.port);
+	if (!cfg.is_secondary) {
+		if (rte_eth_dev_socket_id(dp.port) > 0
+				&& rte_eth_dev_socket_id(dp.port) != (int) rte_socket_id())
+			log_warn("main: port %u is on remote NUMA node to polling thread.\n\t"
+					"Performance will not be optimal.", dp.port);
 
-	log_info("main: core %u running dataplane. [Ctrl+C to quit]",
-			rte_lcore_id());
-	fflush(stdout);
+		log_info("main: core %u running dataplane. [Ctrl+C to quit]",
+				rte_lcore_id());
+		fflush(stdout);
+	}
+
+	if (cfg.is_secondary) {
+		memset(&pmyiok_mac_arr, 0, sizeof(pmyiok_mac_arr));
+
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			bool sent = msg_send(&iok_as_secondary_cmdq_out[i][cfg.seciok_index], IOK2IOK_CMD_GET_MAC, 0);
+			if (!sent) {
+				log_err("main: failed to send IOK2IOK_CMD_GET_MAC to pmyiok %d", i);
+				continue;
+			}
+			msg_out_sync(&iok_as_secondary_cmdq_out[i][cfg.seciok_index]);
+		}
+		sleep(1);
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			uint64_t cmd;
+			unsigned long payload;
+			bool received = msg_recv(&iok_as_secondary_cmdq_in[i][cfg.seciok_index], &cmd, &payload);
+			if (received) {
+				RT_BUG_ON(cmd != IOK2IOK_CMD_REPLY_MAC);
+				uint64_to_eth_addr(payload, &pmyiok_mac_arr[i]);
+				log_info("main: received MAC address from iokernel %d: %02X:%02X:%02X:%02X:%02X:%02X",
+				         i, pmyiok_mac_arr[i].addr[0], pmyiok_mac_arr[i].addr[1], pmyiok_mac_arr[i].addr[2],
+				         pmyiok_mac_arr[i].addr[3], pmyiok_mac_arr[i].addr[4], pmyiok_mac_arr[i].addr[5]);
+			}
+		}
+	}
 
 	/* run until quit or killed */
 	for (;;) {
 		work_done = false;
+
+		if (cfg.is_secondary) {
+			for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+				msg_in_sync(&iok_as_secondary_rxq[i][cfg.seciok_index]);
+				msg_in_sync(&iok_as_secondary_rxcmdq[i][cfg.seciok_index]);
+
+				// msg_out_sync(&iok_as_secondary_txpktq[i][cfg.seciok_index]);
+				// msg_out_sync(&iok_as_secondary_txcmdq[i][cfg.seciok_index]);
+
+				msg_out_sync(&iok_as_secondary_cmdq_out[i][cfg.seciok_index]);
+				msg_in_sync(&iok_as_secondary_cmdq_in[i][cfg.seciok_index]);
+			}
+		} else {
+			for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+				// msg_out_sync(&iok_as_primary_rxq[cfg.pmyiok_index][i]);
+				// msg_out_sync(&iok_as_primary_rxcmdq[cfg.pmyiok_index][i]);
+
+				msg_in_sync(&iok_as_primary_txpktq[cfg.pmyiok_index][i]);
+				msg_in_sync(&iok_as_primary_txcmdq[cfg.pmyiok_index][i]);
+
+				msg_in_sync(&iok_as_primary_cmdq_in[cfg.pmyiok_index][i]);
+				msg_out_sync(&iok_as_primary_cmdq_out[cfg.pmyiok_index][i]);
+			}
+		}
 
 		/* handle a burst of ingress packets */
 		work_done |= rx_burst();
@@ -158,6 +234,12 @@ void dataplane_loop(void)
 		/* handle control messages */
 		if (!work_done)
 			dp_clients_rx_control_lrpcs();
+
+#ifdef MEASURE_TS
+		if (cfg.is_secondary) {
+			call_every_n_seconds(print_lat_hist(rx_pmyiok_to_seciok_lat_hist), 5);
+		}
+#endif
 
 		STAT_INC(LOOPS, 1);
 
@@ -261,6 +343,27 @@ int main(int argc, char *argv[])
 				return -EINVAL;
 			}
 			managed_numa_node = atoi(argv[++i]);
+		} else if (!strcmp(argv[i], "sched_dp_core")) {
+			sched_dp_core = atoi(argv[++i]);
+			sched_dp_core_supplied = true;
+		} else if (!strcmp(argv[i], "sched_ctrl_core")) {
+			sched_ctrl_core = atoi(argv[++i]);
+			sched_ctrl_core_supplied = true;
+		} else if (!strcmp(argv[i], "iok_cxl_path")) {
+			iok_cxl_path = argv[++i];
+		} else if (!strcmp(argv[i], "iok_cxl_size")) {
+			iok_cxl_size = (uint64_t) atoll(argv[++i]);
+		} else if (!strcmp(argv[i], "socket_index")) {
+			cfg.socket_index = atoi(argv[++i]);
+			RT_BUG_ON(cfg.socket_index < 0);
+		} else if (!strcmp(argv[i], "is_secondary")) {
+			cfg.is_secondary = true;
+		} else if (!strcmp(argv[i], "seciok_index")) {
+			cfg.seciok_index = atoi(argv[++i]);
+			RT_BUG_ON(cfg.seciok_index < 0);
+		} else if (!strcmp(argv[i], "pmyiok_index")) {
+			cfg.pmyiok_index = atoi(argv[++i]);
+			RT_BUG_ON(cfg.pmyiok_index < 0);
 		} else if (!strcmp(argv[i], "noidlefastwake")) {
 			cfg.noidlefastwake = true;
 		} else if (!strcmp(argv[i], "dpactiverss")) {
@@ -292,7 +395,7 @@ int main(int argc, char *argv[])
 		cfg.azure_arp_mode = true;
 	}
 
-	pthread_barrier_init(&init_barrier, NULL, 2);
+	pthread_barrier_init(&init_barrier, NULL, 2 + (cfg.is_secondary ? 0 : 1));
 
 	ret = run_init_handlers("iokernel", iok_init_handlers,
 			ARRAY_SIZE(iok_init_handlers));

@@ -50,7 +50,7 @@ ifeq ($(CONFIG_DEBUG),y)
 FLAGS += -DDEBUG -rdynamic -O0 -ggdb -mssse3
 LDFLAGS += -rdynamic
 else
-FLAGS += -DNDEBUG -O3
+FLAGS += -DNDEBUG -O3 -ggdb
 ifeq ($(CONFIG_OPTIMIZE),y)
 FLAGS += -march=native -flto=auto -ffast-math
 ifeq ($(CONFIG_CLANG),y)
@@ -68,6 +68,18 @@ $(error mlx4 support is not available currently)
 FLAGS += -DMLX4
 endif
 endif
+
+ifeq ($(CONFIG_NO_CACHE_COHERENCE),y)
+	ifeq ($(CONFIG_DIRECTPATH),y)
+	$(error NO_CACHE_COHERENCE does not support DIRECTPATH)
+	endif
+	FLAGS += -DNO_CACHE_COHERENCE
+endif
+
+ifeq ($(CONFIG_NO_SCHED),y)
+	FLAGS += -DNO_SCHED
+endif
+
 ifeq ($(CONFIG_SPDK),y)
 FLAGS += -DDIRECT_STORAGE
 RUNTIME_LIBS += $(shell PKG_CONFIG_PATH="$(PKG_CONFIG_PATH)" pkg-config --libs --static libdpdk)

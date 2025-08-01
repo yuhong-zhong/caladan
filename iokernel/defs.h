@@ -34,6 +34,10 @@ struct iokernel_cfg {
 	bool	directpath_active_rss; /* vfio directpath: keep all qs active */
 	bool	azure_arp_mode; /* support Azure by responding to local ARP messages */
 	bool    no_hugepages; /* disable use of reserved hugepages for directpath */
+	int	socket_index;
+	bool	is_secondary;
+	int	seciok_index;
+	int	pmyiok_index;
 };
 
 extern struct iokernel_cfg cfg;
@@ -54,10 +58,16 @@ extern bool vfio_prealloc_rmp;
 #define IOKERNEL_RX_BURST_SIZE		64
 #define IOKERNEL_CONTROL_BURST_SIZE	4
 #define IOKERNEL_POLL_INTERVAL		10
+#define IOKERNEL_MBUF_SIZE		(RTE_PKTMBUF_HEADROOM + 9018)
 
 /* Ensure that uint16_t can be used to index procs/cores */
 BUILD_ASSERT(NCPU < UINT16_MAX);
 BUILD_ASSERT(IOKERNEL_MAX_PROC < UINT16_MAX);
+
+/* primary iokernel */
+extern struct proc *iok2iok_proc_as_pmyiok[IOKERNEL_MAX_PROC];
+/* secondary iokernel */
+extern struct proc *iok2iok_proc_as_seciok[MAX_NR_IOK2IOK][IOKERNEL_MAX_PROC];
 
 /*
  * Process Support
@@ -172,6 +182,8 @@ struct proc {
 	unsigned int		removed:1;
 	unsigned int		started:1;
 	unsigned int		has_storage:1;
+	unsigned int		is_remote:1;
+	unsigned int		is_bak:1;
 	unsigned long		policy_data;
 	unsigned long		directpath_data;
 	uint64_t		next_poll_tsc;
@@ -185,6 +197,8 @@ struct proc {
 	float			load;
 	struct runtime_info	*runtime_info;
 
+	struct shm_region	region;
+
 	/* runtime threads */
 	struct list_head	idle_threads;
 	struct thread		threads[NCPU];
@@ -192,11 +206,14 @@ struct proc {
 
 	/* COLD */
 	uint16_t 	dp_clients_idx;
+	uint16_t 	iok2iok_index;
+	uint16_t 	bak_iok2iok_index;
+	volatile uint16_t zombie_iok2iok_index;
+	uint16_t	uniqid;
 
 	/* network data */
 	uint32_t		ip_addr;
-
-	struct shm_region	region;
+	struct rte_flow 		*flow;
 
 	/* Overfloq queue for completion data */
 	size_t max_overflows;
@@ -213,7 +230,17 @@ struct proc {
 	uint16_t		flow_tbl[NCPU];
 	struct thread		*active_threads[NCPU];
 	int				control_fd;
+	int			lrpc_control_fd;
+	int			bak_lrpc_control_fd;
+	volatile int		zombie_lrpc_control_fd;
 	pid_t			pid;
+
+	int			seciok_index;
+
+	int		cur_pmyiok_index;
+	int		bak_pmyiok_index;
+	volatile int	zombie_pmyiok_index;
+	volatile bool	force_failover;
 
 	/* table of physical addresses for shared memory */
 	physaddr_t		page_paddrs[];
@@ -324,6 +351,9 @@ extern int data_to_control_efd;
 enum {
 	DATAPLANE_ADD_CLIENT,		/* points to a struct proc */
 	DATAPLANE_REMOVE_CLIENT,	/* points to a struct proc */
+	DATAPLANE_FAILOVER,		/* points to a struct proc */
+	DATAPLANE_FAILOVER_FORCE,	/* points to a struct proc */
+	DATAPLANE_UPDATE_MAC,		/* points to a struct proc */
 	DATAPLANE_NR,			/* number of commands */
 };
 
@@ -344,14 +374,16 @@ struct dataplane {
 	struct shm_region	ingress_mbuf_region;
 
 	uint16_t			nr_clients;
-	struct proc		*clients[IOKERNEL_MAX_PROC];
 	struct rte_hash		*ip_to_proc;
+	struct proc		*clients_by_id[IOKERNEL_MAX_PROC];
+	struct proc		*clients[IOKERNEL_MAX_PROC];
 	struct rte_device	*device;
 };
 
 extern struct dataplane dp;
 extern struct iokernel_info *iok_info;
 
+extern int noinline_flag;
 
 /*
  * Logical cores assigned to linux and the control and dataplane threads
@@ -418,6 +450,7 @@ extern bool rx_send_to_runtime(struct proc *p, uint32_t hash, uint64_t cmd,
  * Initialization
  */
 
+extern int cxl_init(void);
 extern int ksched_init(void);
 extern int sched_init(void);
 extern int simple_init(void);
@@ -445,6 +478,25 @@ extern int managed_numa_node;
 extern pthread_barrier_t init_barrier;
 
 extern int pin_thread(pid_t tid, int core);
+
+/*
+ * CXL memory allocation
+ */
+
+extern const char *iok_cxl_path;
+extern uint64_t iok_cxl_size;
+
+extern void *cxl_early_alloc(uint64_t size, uint64_t alignment, uint64_t *out_cxl_offset);
+
+#define CXL_CLIENT_SIZE (1UL << 32UL)
+#define MAX_NR_CXL_CLIENTS (4UL)
+
+extern void cxl_set_client_base(uint64_t offset);
+extern void *cxl_alloc_client(uint64_t *out_cxl_offset);
+extern void cxl_free_client(void *ptr);
+extern void *cxl_get_client(uint64_t cxl_offset);
+
+uint64_t virt_addr_to_phys_addr(uint64_t virtual_addr);
 
 /*
  * dataplane RX/TX functions
@@ -520,7 +572,7 @@ static inline int directpath_get_clock(unsigned int *f, ...)
 }
 
 static inline void directpath_poll_thread_delay(struct proc *p, ...) {}
-static inline bool directpath_poll_proc(struct proc *p, uint64_t *delay_cycles, uint64_t cur_tsc) { return true; }
+static inline bool directpath_poll_proc(struct proc *p, uint64_t *delay_cycles, uint64_t cur_tsc, bool should_arm) { return true; }
 static inline void directpath_notify_waking(struct proc *p, struct thread *th) {}
 
 #endif

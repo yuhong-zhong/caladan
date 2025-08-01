@@ -19,32 +19,6 @@
 #define MBUF_CACHE_SIZE 250
 #define RX_PREFETCH_STRIDE 2
 
-
-/*
- * Prepend rx_net_hdr preamble to ingress packets.
- */
-static struct rx_net_hdr *rx_prepend_rx_preamble(struct rte_mbuf *buf)
-{
-	struct rx_net_hdr *net_hdr;
-	uint64_t masked_ol_flags;
-
-	net_hdr = (struct rx_net_hdr *) rte_pktmbuf_prepend(buf,
-			(uint16_t) sizeof(*net_hdr));
-	RTE_ASSERT(net_hdr != NULL);
-
-	net_hdr->completion_data = (unsigned long)buf;
-	net_hdr->len = rte_pktmbuf_pkt_len(buf) - sizeof(*net_hdr);
-	net_hdr->rss_hash = buf->hash.rss;
-	masked_ol_flags = buf->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
-	if (masked_ol_flags == RTE_MBUF_F_RX_IP_CKSUM_GOOD)
-		net_hdr->csum_type = CHECKSUM_TYPE_UNNECESSARY;
-	else
-		net_hdr->csum_type = CHECKSUM_TYPE_NEEDED;
-	net_hdr->csum = 0; /* unused for now */
-
-	return net_hdr;
-}
-
 /**
  * rx_send_to_runtime - enqueues a command to an RXQ for a runtime
  * @p: the runtime's proc structure
@@ -80,13 +54,99 @@ bool rx_send_to_runtime(struct proc *p, uint32_t hash, uint64_t cmd,
 	return lrpc_send(&th->rxq, cmd, payload);
 }
 
-
-static bool rx_send_pkt_to_runtime(struct proc *p, struct rx_net_hdr *hdr)
+void parse_mbuf(struct rte_mbuf *buf, uint32_t *len, uint32_t *off, uint32_t *csum_type,
+		uint32_t *rss_hash, void **packet)
 {
-	shmptr_t shmptr;
+	uint64_t masked_ol_flags;
 
-	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, hdr, sizeof(*hdr));
-	return rx_send_to_runtime(p, hdr->rss_hash, RX_NET_RECV, shmptr);
+	*len = rte_pktmbuf_pkt_len(buf);
+	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(*len >= (1u << 14u));
+
+	masked_ol_flags = buf->ol_flags & RTE_MBUF_F_RX_IP_CKSUM_MASK;
+	if (masked_ol_flags == RTE_MBUF_F_RX_IP_CKSUM_GOOD)
+		*csum_type = CHECKSUM_TYPE_UNNECESSARY;
+	else
+		*csum_type = CHECKSUM_TYPE_NEEDED;
+	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(*csum_type >= (1u << 1u));
+
+	*rss_hash = buf->hash.rss;
+
+	*packet = (char *) buf->buf_addr + buf->data_off;
+
+	*off = (uint32_t) ((uint64_t) (*packet) - (uint64_t) buf);
+	// IOK2IOK_RXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(*off >= (1u << 12u));
+}
+
+static bool rx_send_pkt_to_seciok(struct proc *p, struct rte_mbuf *buf)
+{
+	struct msg_chan_out *chan = &iok_as_primary_rxq[cfg.pmyiok_index][p->seciok_index];
+	uint32_t len, off, csum_type, rss_hash, rawcmd;
+	void *packet;
+	shmptr_t shmptr;
+	uint64_t payload;
+	bool success;
+
+	parse_mbuf(buf, &len, &off, &csum_type, &rss_hash, &packet);
+
+	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, packet, len);
+	// IOK2IOK_RXPKT_MAKE_PAYLOAD assumption
+	RT_BUG_ON(shmptr > UINT32_MAX);
+
+	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, cfg.pmyiok_index, csum_type);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_LEN(rawcmd) != len);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_OFF(rawcmd) != off);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_PMYIOK_INDEX(rawcmd) != cfg.pmyiok_index);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) != csum_type);
+	payload = IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss_hash);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != rss_hash);
+
+	log_debug_duration(success = msg_send(chan, IOK2IOK_MAKE_CMD(rawcmd, p->iok2iok_index), payload));
+	if (unlikely(!success)) {
+		log_err_ratelimited("rx: failed to send to secondary iokernel");
+		return false;
+	}
+	return true;
+}
+
+#ifdef MEASURE_TS
+static bool rx_send_ts_to_seciok(struct msg_chan_out *chan)
+{
+	bool success;
+
+	success = msg_send(chan, IOK2IOK_TS_CMD, rdtsc());
+	if (unlikely(!success)) {
+		log_err_ratelimited("rx: failed to send ts to secondary iokernel");
+		return false;
+	}
+	return true;
+}
+#endif
+
+static bool rx_send_pkt_to_runtime(struct proc *p, struct rte_mbuf *buf)
+{
+	uint32_t len, off, csum_type, rss_hash, rawcmd;
+	void *packet;
+	shmptr_t shmptr;
+	uint64_t payload;
+
+	RT_BUG_ON(unlikely(p->is_remote));
+
+	parse_mbuf(buf, &len, &off, &csum_type, &rss_hash, &packet);
+	rawcmd = IOK2IOK_RXPKT_MAKE_RAWCMD(len, off, cfg.pmyiok_index, csum_type);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_LEN(rawcmd) != len);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_OFF(rawcmd) != off);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_PMYIOK_INDEX(rawcmd) != cfg.pmyiok_index);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_CSUM_TYPE(rawcmd) != csum_type);
+
+	shmptr = ptr_to_shmptr(&dp.ingress_mbuf_region, packet, sizeof(*packet));
+	payload = IOK2IOK_RXPKT_MAKE_PAYLOAD(shmptr, rss_hash);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_SHMPTR(payload) != shmptr);
+	RT_BUG_ON(IOK2IOK_RXPKT_GET_RSS(payload) != rss_hash);
+	return rx_send_to_runtime(p, rss_hash, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
 }
 
 static bool azure_arp_response(struct rte_mbuf *buf)
@@ -113,15 +173,43 @@ static bool azure_arp_response(struct rte_mbuf *buf)
 
 static void rx_one_pkt(struct rte_mbuf *buf)
 {
-	int ret;
+	int ret, mark_id;
 	struct proc *p;
 	struct rte_arp_hdr *arphdr;
 	struct rte_ether_hdr *ptr_mac_hdr;
 	struct rte_ether_addr *ptr_dst_addr;
 	struct rte_ipv4_hdr *iphdr;
-	struct rx_net_hdr *net_hdr;
 	uint16_t ether_type;
 	uint32_t dst_ip;
+#ifdef MEASURE_TS
+	static uint64_t ts_count = 0;
+#endif
+
+	/* use hardware assisted flow tagging to match packets to procs */
+	if (buf->ol_flags & RTE_MBUF_F_RX_FDIR_ID) {
+		mark_id = buf->hash.fdir.hi;
+		assert(mark_id >= 0 && mark_id < IOKERNEL_MAX_PROC);
+		p = dp.clients_by_id[mark_id];
+		if (likely(p)) {
+			if (p->is_remote) {
+				if (!rx_send_pkt_to_seciok(p, buf)) {
+					STAT_INC(RX_UNICAST_FAIL, 1);
+					goto fail_free;
+				}
+#ifdef MEASURE_TS
+				ts_count++;
+				if (ts_count == TS_COUNT_INTERVAL) {
+					rx_send_ts_to_seciok(&iok_as_primary_rxq[cfg.pmyiok_index][p->seciok_index]);
+					ts_count = 0;
+				}
+#endif
+			} else if (!rx_send_pkt_to_runtime(p, buf)) {
+				STAT_INC(RX_UNICAST_FAIL, 1);
+				goto fail_free;
+			}
+			return;
+		}
+	}
 
 	ptr_mac_hdr = rte_pktmbuf_mtod(buf, struct rte_ether_hdr *);
 	ptr_dst_addr = &ptr_mac_hdr->dst_addr;
@@ -129,44 +217,57 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 		  PRIx8 " %02" PRIx8 " %02" PRIx8 " %02" PRIx8,
 		  ptr_dst_addr->addr_bytes[0], ptr_dst_addr->addr_bytes[1],
 		  ptr_dst_addr->addr_bytes[2], ptr_dst_addr->addr_bytes[3],
-	  ptr_dst_addr->addr_bytes[4], ptr_dst_addr->addr_bytes[5]);
+		  ptr_dst_addr->addr_bytes[4], ptr_dst_addr->addr_bytes[5]);
 
 	ether_type = rte_be_to_cpu_16(ptr_mac_hdr->ether_type);
+#ifdef NO_CACHE_COHERENCE
+	// clflushopt(ptr_mac_hdr);
+	_mm_mfence();
+	batch_clflushopt(ptr_mac_hdr, sizeof(*ptr_mac_hdr));
+#endif
 
 	if (likely(ether_type == ETHTYPE_IP)) {
 		iphdr = rte_pktmbuf_mtod_offset(buf, struct rte_ipv4_hdr *,
 			sizeof(*ptr_mac_hdr));
 		dst_ip = rte_be_to_cpu_32(iphdr->dst_addr);
+#ifdef NO_CACHE_COHERENCE
+		_mm_mfence();
+		batch_clflushopt(iphdr, sizeof(*iphdr));
+#endif
 	} else if (ether_type == ETHTYPE_ARP) {
 		arphdr = rte_pktmbuf_mtod_offset(buf, struct rte_arp_hdr *,
 			sizeof(*ptr_mac_hdr));
 		dst_ip = rte_be_to_cpu_32(arphdr->arp_data.arp_tip);
+#ifdef NO_CACHE_COHERENCE
+		_mm_mfence();
+		batch_clflushopt(arphdr, sizeof(*arphdr));
+#endif
 
 		// Azure's faked ARP replies always go to the default NIC
 		// address, so broadcast them to all runtimes.
-		if (cfg.azure_arp_mode &&
-		    arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
-			bool success;
-			int n_sent = 0;
-			net_hdr = rx_prepend_rx_preamble(buf);
-			for (int i = 0; i < dp.nr_clients; i++) {
-				success = rx_send_pkt_to_runtime(dp.clients[i], net_hdr);
-				if (success) {
-					n_sent++;
-				} else {
-					STAT_INC(RX_BROADCAST_FAIL, 1);
-					log_debug_ratelimited("rx: failed to enqueue broadcast "
-					                      "packet to runtime");
-				}
-			}
-			if (n_sent == 0)
-				rte_pktmbuf_free(buf);
-			else
-				rte_mbuf_refcnt_update(buf, n_sent - 1);
-			return;
-		}
+		// if (cfg.azure_arp_mode &&
+		//     arphdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
+		// 	bool success;
+		// 	int n_sent = 0;
+		// 	net_hdr = rx_prepend_rx_preamble(buf);
+		// 	for (int i = 0; i < dp.nr_clients; i++) {
+		// 		success = rx_send_pkt_to_runtime(dp.clients[i], net_hdr);
+		// 		if (success) {
+		// 			n_sent++;
+		// 		} else {
+		// 			STAT_INC(RX_BROADCAST_FAIL, 1);
+		// 			log_debug_ratelimited("rx: failed to enqueue broadcast "
+		// 			                      "packet to runtime");
+		// 		}
+		// 	}
+		// 	if (n_sent == 0)
+		// 		rte_pktmbuf_free(buf);
+		// 	else
+		// 		rte_mbuf_refcnt_update(buf, n_sent - 1);
+		// 	return;
+		// }
 	} else {
-		log_debug("unrecognized ether type");
+		// log_warn_ratelimited("rx: unsupported ether type %x", ether_type);
 		goto fail_free;
 	}
 
@@ -179,13 +280,22 @@ static void rx_one_pkt(struct rte_mbuf *buf)
 		    azure_arp_response(buf))
 			return;
 
+		// log_warn_ratelimited("rx: failed to find runtime for IP 0x%x", dst_ip);
 		STAT_INC(RX_UNREGISTERED_MAC, 1);
 		goto fail_free;
 	}
 
-	net_hdr = rx_prepend_rx_preamble(buf);
-	if (!rx_send_pkt_to_runtime(p, net_hdr)) {
+	if (p->is_remote) {
+		if (!rx_send_pkt_to_seciok(p, buf)) {
+			STAT_INC(RX_UNICAST_FAIL, 1);
+			goto fail_free;
+		}
+		return;
+	}
+
+	if (!rx_send_pkt_to_runtime(p, buf)) {
 		STAT_INC(RX_UNICAST_FAIL, 1);
+		log_warn_ratelimited("rx: failed to send packet to runtime");
 		goto fail_free;
 	}
 
@@ -206,6 +316,77 @@ fail_free:
 	STAT_INC(RX_UNHANDLED, 1);
 }
 
+static int rx_burst_from_pmyiok(struct msg_chan_in *chan, int n, int pmyiok_index)
+{
+	int i;
+	uint64_t cmd, completion_data;
+	uint32_t rss, off, rawcmd;
+	uint16_t iok2iok_proc_index;
+	unsigned long payload;
+	shmptr_t shmptr;
+	bool success;
+	struct proc *p;
+
+	for (i = 0; i < n; i++) {
+		log_debug_duration(success = msg_recv(chan, &cmd, &payload));
+		if (!success)
+			break;
+
+#ifdef MEASURE_TS
+		if (cmd == IOK2IOK_TS_CMD) {
+			uint64_t latency = (rdtsc() - payload) * 1000ul / cycles_per_us;
+			for (uint64_t j = 0; j < LAT_DIST_NUM_BINS; j++) {
+				if (j == LAT_DIST_NUM_BINS - 1) {
+					rx_pmyiok_to_seciok_lat_hist[j]++;
+					break;
+				} else if (latency <= lat_hist_boundary_arr[j]) {
+					rx_pmyiok_to_seciok_lat_hist[j]++;
+					break;
+				}
+			}
+			continue;
+		}
+#endif
+
+		rawcmd = IOK2IOK_GET_RAWCMD(cmd);
+		iok2iok_proc_index = (uint16_t) IOK2IOK_GET_PROC_IDX(cmd);
+		p = iok2iok_proc_as_seciok[pmyiok_index][iok2iok_proc_index];
+
+		rss = IOK2IOK_RXPKT_GET_RSS(payload);
+
+		if (p->cur_pmyiok_index == pmyiok_index || p->zombie_pmyiok_index == pmyiok_index) {
+			success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+			if (!success) {
+				log_warn_ratelimited("rx: failed to send packet to runtime");
+			}
+		} else {
+			// reject packets from other pmyioks
+			success = false;
+		}
+
+		// // FIXME: temporarily allow packets from any pmyiok
+		// success = rx_send_to_runtime(p, rss, RX_MAKE_CMD(RX_NET_RECV, rawcmd), payload);
+		// if (!success) {
+		// 	log_warn_ratelimited("rx: failed to send packet to runtime");
+		// }
+
+		if (!success) {
+			shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
+			off = IOK2IOK_RXPKT_GET_OFF(rawcmd);
+			completion_data = ((uint64_t) shmptr) - ((uint64_t) off);
+
+			STAT_INC(RX_UNICAST_FAIL, 1);
+			STAT_INC(RX_UNHANDLED, 1);
+			success = msg_send(&iok_as_secondary_txcmdq[pmyiok_index][cfg.seciok_index],
+					   IOK2IOK_MAKE_CMD(TXCMD_NET_COMPLETE, 0),
+					   completion_data);
+			RT_BUG_ON(!success);
+		}
+	}
+
+	return i;
+}
+
 /*
  * Process a batch of incoming packets.
  */
@@ -214,18 +395,37 @@ bool rx_burst(void)
 	struct rte_mbuf *bufs[IOKERNEL_RX_BURST_SIZE];
 	uint16_t nb_rx, i;
 
+	if (cfg.is_secondary) {
+		nb_rx = 0;
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			nb_rx += rx_burst_from_pmyiok(&iok_as_secondary_rxq[i][cfg.seciok_index],
+			                              IOKERNEL_RX_BURST_SIZE, i);
+		}
+		STAT_INC(RX_PULLED, nb_rx);
+		return nb_rx > 0;
+	}
+
 	/* retrieve packets from NIC queue */
-	nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE);
+	log_info_throughput(nb_rx = rte_eth_rx_burst(dp.port, 0, bufs, IOKERNEL_RX_BURST_SIZE), nb_rx);
 	STAT_INC(RX_PULLED, nb_rx);
 	if (nb_rx > 0)
-		log_debug("rx: received %d packets on port %d", nb_rx, dp.port);
+		log_debug_ratelimited("rx: received %d packets on port %d", nb_rx, dp.port);
 
 	for (i = 0; i < nb_rx; i++) {
+		// should not prefetch so that the NIC always writes RX packets into main memory
+#ifndef NO_CACHE_COHERENCE
 		if (i + RX_PREFETCH_STRIDE < nb_rx) {
 			prefetch(rte_pktmbuf_mtod(bufs[i + RX_PREFETCH_STRIDE],
 				 char *));
 		}
+#endif
 		rx_one_pkt(bufs[i]);
+	}
+
+	if (!cfg.is_secondary) {
+		for (i = 0; i < MAX_NR_IOK2IOK; ++i) {
+			msg_out_sync(&iok_as_primary_rxq[cfg.pmyiok_index][i]);
+		}
 	}
 
 	return nb_rx > 0;
@@ -286,7 +486,7 @@ static struct rte_mempool *rx_pktmbuf_pool_create_in_shm(const char *name,
 		goto fail_free_mempool;
 	}
 
-	shbuf = dp.ingress_mbuf_region.base;
+	shbuf = dp.ingress_mbuf_region.base + cfg.pmyiok_index * INGRESS_MBUF_SHM_SIZE;
 
 	/* hack to make sure that this memory area is registered in DPDK */
 	/* use rte_extmem_* and rte_dev_dma_map in the future */
@@ -335,12 +535,15 @@ fail:
  */
 int rx_init()
 {
+	if (cfg.is_secondary)
+		return 0;
+
 	if (cfg.vfio_directpath)
 		return 0;
 
 	/* create a mempool in shared memory to hold the rx mbufs */
 	dp.rx_mbuf_pool = rx_pktmbuf_pool_create_in_shm("RX_MBUF_POOL",
-			IOKERNEL_NUM_MBUFS, MBUF_CACHE_SIZE, 0, RTE_MBUF_DEFAULT_BUF_SIZE,
+			IOKERNEL_NUM_MBUFS, MBUF_CACHE_SIZE, 0, IOKERNEL_MBUF_SIZE,
 			rte_socket_id());
 
 	if (dp.rx_mbuf_pool == NULL) {

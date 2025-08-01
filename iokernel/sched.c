@@ -33,6 +33,9 @@ unsigned int sched_siblings[NCPU];
 unsigned int sched_dp_core;	/* used for the iokernel's dataplane */
 unsigned int sched_ctrl_core;	/* used for the iokernel's controlplane */
 
+bool sched_dp_core_supplied = false;
+bool sched_ctrl_core_supplied = false;
+
 /* keeps track of which cores are in each NUMA socket */
 struct socket socket_state[NNUMA];
 int managed_numa_node;
@@ -43,6 +46,10 @@ int sched_cores_nr;
 
 static int nr_guaranteed;
 static unsigned long nr_procs;
+
+#ifdef NO_SCHED
+DEFINE_BITMAP(allocated_cores, NCPU);
+#endif
 
 LIST_HEAD(poll_list);
 
@@ -148,8 +155,10 @@ static void sched_steer_flows(struct proc *p)
 static void sched_enable_kthread(struct proc *p, struct thread *th, unsigned int core)
 {
 	ACCESS_ONCE(th->q_ptrs->curr_grant_gen) = ++th->wake_gen;
+#ifndef NO_SCHED
 	thread_enable_sched_poll(th);
 	proc_enable_sched_poll(p);
+#endif
 	th->change_tsc = cur_tsc;
 	th->active = true;
 	th->core = core;
@@ -720,7 +729,9 @@ static void sched_detect_io_for_idle_runtime(struct proc *p)
 		sched_measure_hardware_delay(th, &th->directpath_hwq, false, &busy,
 			                         &standing_queue, &delay);
 		if (busy) {
+#ifndef NO_SCHED
 			sched_add_core(p);
+#endif  /* NO_SCHED */
 			return;
 		}
 
@@ -854,7 +865,9 @@ void sched_poll(void)
 	 * final pass --- let the scheduler policy decide how to respond
 	 */
 
+#ifndef NO_SCHED
 	sched_ops->sched_poll(now, idle_cnt, idle);
+#endif  /* NO_SCHED */
 	ksched_send_intrs();
 }
 
@@ -866,12 +879,16 @@ void sched_poll(void)
  */
 int sched_add_core(struct proc *p)
 {
+#ifndef NO_SCHED
 	if (cfg.noidlefastwake) {
 		proc_enable_sched_poll(p);
 		return 0;
 	}
 
 	return sched_ops->notify_core_needed(p);
+#else
+	return 0;
+#endif  /* NO_SCHED */
 }
 
 /**
@@ -883,6 +900,20 @@ int sched_add_core(struct proc *p)
 int sched_attach_proc(struct proc *p)
 {
 	int i, ret;
+#ifdef NO_SCHED
+	int num_cores;
+
+	num_cores = bitmap_popcount(p->sched_cfg.rt_cores, NCPU);
+	RT_BUG_ON(num_cores != p->sched_cfg.guaranteed_cores);
+	RT_BUG_ON(num_cores != p->sched_cfg.max_cores);
+	RT_BUG_ON(num_cores != p->thread_count);
+
+	bitmap_for_each_set(p->sched_cfg.rt_cores, NCPU, i) {
+		RT_BUG_ON(bitmap_test(allocated_cores, i));
+		RT_BUG_ON(!bitmap_test(sched_allowed_cores, i));
+		bitmap_set(allocated_cores, i);
+	}
+#endif  /* NO_SCHED */
 
 	if (p->sched_cfg.guaranteed_cores + nr_guaranteed > sched_cores_nr) {
 		log_err("guaranteed cores exceeds total core count");
@@ -898,14 +929,20 @@ int sched_attach_proc(struct proc *p)
 		list_add(&p->idle_threads, &p->threads[i].idle_link);
 	}
 
+	nr_guaranteed += p->sched_cfg.guaranteed_cores;
+#ifdef NO_SCHED
+	bitmap_for_each_set(p->sched_cfg.rt_cores, NCPU, i) {
+		ret = sched_run_on_core(p, i);
+		RT_BUG_ON(ret != 0);
+	}
+#else
 	ret = sched_ops->proc_attach(p, &p->sched_cfg);
 	if (ret)
 		return ret;
-
-	nr_guaranteed += p->sched_cfg.guaranteed_cores;
 	proc_enable_sched_poll_nocheck(p);
-	nr_procs++;
+#endif  /* NO_SCHED */
 
+	nr_procs++;
 	return 0;
 }
 
@@ -915,8 +952,17 @@ int sched_attach_proc(struct proc *p)
  */
 void sched_detach_proc(struct proc *p)
 {
+#ifdef NO_SCHED
+	int i, ret;
+	bitmap_for_each_set(p->sched_cfg.rt_cores, NCPU, i) {
+		ret = sched_idle_on_core(0, i);
+		RT_BUG_ON(ret != 0);
+		bitmap_clear(allocated_cores, i);
+	}
+#else
 	proc_disable_sched_poll(p);
 	sched_ops->proc_detach(p);
+#endif  /* NO_SCHED */
 	nr_guaranteed -= p->sched_cfg.guaranteed_cores;
 	nr_procs--;
 }
@@ -974,6 +1020,10 @@ int sched_init(void)
 
 	bitmap_init(sched_allowed_cores, cpu_count, false);
 
+#ifdef NO_SCHED
+	bitmap_init(allocated_cores, NCPU, false);
+#endif  /* NO_SCHED */
+
 	/*
 	 * first pass: scan and log CPUs
 	 */
@@ -1015,11 +1065,14 @@ int sched_init(void)
 	 * third pass: reserve cores for iokernel and system
 	 */
 
-	sched_ctrl_core = bitmap_find_next_set(sched_allowed_cores, NCPU, 0);
-	if (cfg.noht)
-		sched_dp_core = bitmap_find_next_set(sched_allowed_cores, NCPU, sched_ctrl_core + 1);
-	else
-		sched_dp_core = sched_siblings[sched_ctrl_core];
+	if (!sched_ctrl_core_supplied)
+		sched_ctrl_core = bitmap_find_next_set(sched_allowed_cores, NCPU, 0);
+	if (!sched_dp_core_supplied) {
+		if (cfg.noht)
+			sched_dp_core = bitmap_find_next_set(sched_allowed_cores, NCPU, sched_ctrl_core + 1);
+		else
+			sched_dp_core = sched_siblings[sched_ctrl_core];
+	}
 	bitmap_clear(sched_allowed_cores, sched_ctrl_core);
 	bitmap_clear(sched_allowed_cores, sched_dp_core);
 	log_info("sched: dataplane on %d, control on %d",

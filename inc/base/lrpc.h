@@ -11,15 +11,20 @@
 #include <base/stddef.h>
 #include <base/assert.h>
 #include <base/atomic.h>
+#include <base/mem.h>
+#include <base/log.h>
 
 struct lrpc_msg {
 	uint64_t	cmd;
 	unsigned long	payload;
 };
 
+BUILD_ASSERT(CACHE_LINE_SIZE % sizeof(struct lrpc_msg) == 0);
+
 #define LRPC_DONE_PARITY	(1UL << 63)
 #define LRPC_CMD_MASK		(~LRPC_DONE_PARITY)
 
+#define LRPC_PREFETCH_LEN 8
 
 /*
  * Egress Channel Support
@@ -159,3 +164,70 @@ static inline bool lrpc_empty(struct lrpc_chan_in *chan)
 
 extern int lrpc_init_in(struct lrpc_chan_in *chan, struct lrpc_msg *tbl,
 			unsigned int size, uint32_t *recv_head_wb);
+
+struct msg_chan_out {
+	uint32_t	send_head;
+	uint32_t	send_tail;
+	struct lrpc_msg	*tbl;
+	uint32_t 	*recv_head_wb;
+	uint32_t	size;
+#ifdef NO_CACHE_COHERENCE
+	uint32_t	clwb_send_head;
+#endif
+} __attribute__((aligned(CACHE_LINE_SIZE)));
+
+static inline int msg_init_out(struct msg_chan_out *chan, struct lrpc_msg *tbl,
+			       unsigned int size, uint32_t *recv_head_wb)
+{
+	if (!is_power_of_two(size))
+		return -EINVAL;
+
+	memset(chan, 0, sizeof(*chan));
+	chan->tbl = tbl;
+	chan->size = size;
+	chan->recv_head_wb = recv_head_wb;
+	return 0;
+}
+
+static inline void msg_out_sync(struct msg_chan_out *chan)
+{
+#ifdef NO_CACHE_COHERENCE
+	clwb(&chan->tbl[chan->send_head & (chan->size - 1)]);
+#endif
+}
+
+bool msg_send(struct msg_chan_out *chan, uint64_t cmd, unsigned long payload);
+
+struct msg_chan_in {
+	struct lrpc_msg	*tbl;
+	uint32_t 	*recv_head_wb;
+	uint32_t	recv_head;
+	uint32_t	size;
+#ifdef NO_CACHE_COHERENCE
+	uint32_t	prefetch_len;
+	uint32_t	hit_count;
+#endif
+} __attribute__((aligned(CACHE_LINE_SIZE)));
+
+static inline int msg_init_in(struct msg_chan_in *chan, struct lrpc_msg *tbl,
+			      unsigned int size, uint32_t *recv_head_wb)
+{
+	if (!is_power_of_two(size))
+		return -EINVAL;
+
+	memset(chan, 0, sizeof(*chan));
+	chan->tbl = tbl;
+	chan->size = size;
+	chan->recv_head_wb = recv_head_wb;
+#ifdef NO_CACHE_COHERENCE
+	chan->prefetch_len = LRPC_PREFETCH_LEN;
+#endif
+	return 0;
+}
+
+static inline void msg_in_sync(struct msg_chan_in *chan)
+{
+	;
+}
+
+bool msg_recv(struct msg_chan_in *chan, uint64_t *cmd_out, unsigned long *payload_out);

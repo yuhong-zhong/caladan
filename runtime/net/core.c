@@ -129,41 +129,63 @@ static uint32_t compute_flow_affinity(uint8_t ipproto, uint16_t local_port, stru
 	return ret % (uint32_t)maxks;
 }
 
-static void net_rx_send_completion(unsigned long completion_data)
+static void net_rx_send_completion(uint32_t pmyiok_index, unsigned long completion_data)
 {
 	struct kthread *k;
 
 	k = getk();
-	if (unlikely(!lrpc_send(&k->txcmdq, TXCMD_NET_COMPLETE,
+	if (unlikely(!lrpc_send(&k->txcmdq, TXCMD_MAKE_CMD(TXCMD_NET_COMPLETE, pmyiok_index),
 				completion_data))) {
-		WARN();
+		log_warn_ratelimited("failed to send rx completion to iokernel");
 	}
 	putk();
 }
 
-static struct mbuf *net_rx_alloc_mbuf(struct rx_net_hdr *hdr)
+static struct mbuf *net_rx_alloc_mbuf(uint32_t aux, uint64_t payload)
 {
+	uint32_t len, off, pmyiok_index, csum_type, rss_hash;
+	shmptr_t shmptr;
+	void *packet;
 	struct mbuf *m;
 	void *buf;
 
+	len = IOK2IOK_RXPKT_GET_LEN(aux);
+	off = IOK2IOK_RXPKT_GET_OFF(aux);
+	pmyiok_index = IOK2IOK_RXPKT_GET_PMYIOK_INDEX(aux);
+	csum_type = IOK2IOK_RXPKT_GET_CSUM_TYPE(aux);
+
+	rss_hash = IOK2IOK_RXPKT_GET_RSS(payload);
+	shmptr = IOK2IOK_RXPKT_GET_SHMPTR(payload);
+
+	packet = shmptr_to_ptr(&netcfg.rx_region, shmptr, len);
+
 	/* allocate the buffer to store the payload */
-	m = smalloc(hdr->len + MBUF_HEAD_LEN);
+	m = smalloc(len + MBUF_HEAD_LEN);
 	if (unlikely(!m))
 		goto out;
 
 	buf = (unsigned char *)m + MBUF_HEAD_LEN;
 
-	/* copy the payload and release the buffer back to the iokernel */
-	memcpy(buf, hdr->payload, hdr->len);
+#ifdef NO_CACHE_COHERENCE
+	batch_clflushopt(packet, len);
+	_mm_mfence();
+#endif
 
-	mbuf_init(m, buf, hdr->len, 0);
-	m->len = hdr->len;
-	m->csum_type = hdr->csum_type;
+	/* copy the payload and release the buffer back to the iokernel */
+	memcpy(buf, packet, len);
+
+// #ifdef NO_CACHE_COHERENCE
+// 	batch_clflushopt(packet, len);
+// #endif
+
+	mbuf_init(m, buf, len, 0);
+	m->len = len;
+	m->csum_type = csum_type;
 
 	m->release = (void (*)(struct mbuf *))sfree;
 
 out:
-	net_rx_send_completion(hdr->completion_data);
+	net_rx_send_completion(pmyiok_index, ((uint64_t) shmptr) - ((uint64_t) off));
 	return m;
 }
 
@@ -204,6 +226,7 @@ static void net_rx_one(struct mbuf *m)
 	const struct eth_hdr *llhdr;
 	const struct ip_hdr *iphdr;
 	uint16_t len;
+	struct kthread *k = myk();
 
 	STAT(RX_PACKETS)++;
 	STAT(RX_BYTES) += mbuf_length(m);
@@ -213,8 +236,10 @@ static void net_rx_one(struct mbuf *m)
 	 */
 
 	llhdr = mbuf_pull_hdr_or_null(m, *llhdr);
-	if (unlikely(!llhdr))
+	if (unlikely(!llhdr)) {
+		log_err_ratelimited("net: failed to pull link layer header");
 		goto drop;
+	}
 
 	/* handle ARP requests */
 	if (ntoh16(llhdr->type) == ETHTYPE_ARP) {
@@ -223,11 +248,21 @@ static void net_rx_one(struct mbuf *m)
 	}
 
 	/* filter out requests we can't handle */
-	BUILD_ASSERT(sizeof(llhdr->dhost.addr) == sizeof(netcfg.mac.addr));
-	if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP ||
-		     memcmp(llhdr->dhost.addr, netcfg.mac.addr,
-			    sizeof(llhdr->dhost.addr)) != 0))
+	BUILD_ASSERT(sizeof(llhdr->dhost.addr) == sizeof(k->mac.addr));
+	// if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP ||
+	// 	     memcmp(llhdr->dhost.addr, k->mac.addr,
+	// 		    sizeof(llhdr->dhost.addr)) != 0)) {
+	// 	log_err_ratelimited("net: dropping unsupported packet, type %x",
+	// 			    ntoh16(llhdr->type));
+	// 	goto drop;
+	// }
+
+	// FIXME: temporary hack to allow all packets
+	if (unlikely(ntoh16(llhdr->type) != ETHTYPE_IP)) {
+		log_err_ratelimited("net: dropping unsupported packet, type %x",
+				    ntoh16(llhdr->type));
 		goto drop;
+	}
 
 
 	/*
@@ -236,20 +271,28 @@ static void net_rx_one(struct mbuf *m)
 
 	mbuf_mark_network_offset(m);
 	iphdr = mbuf_pull_hdr_or_null(m, *iphdr);
-	if (unlikely(!iphdr))
+	if (unlikely(!iphdr)) {
+		log_err_ratelimited("net: failed to pull network layer header");
 		goto drop;
+	}
 
 	/* Did HW checksum verification pass? */
 	if (m->csum_type != CHECKSUM_TYPE_UNNECESSARY) {
-		if (chksum_internet(iphdr, sizeof(*iphdr)))
+		if (chksum_internet(iphdr, sizeof(*iphdr))) {
+			log_err_ratelimited("net: checksum failed");
 			goto drop;
+		}
 	}
 
-	if (unlikely(!ip_hdr_supported(iphdr)))
+	if (unlikely(!ip_hdr_supported(iphdr))) {
+		log_err_ratelimited("net: unsupported IP header");
 		goto drop;
+	}
 	len = ntoh16(iphdr->len) - sizeof(*iphdr);
-	if (unlikely(mbuf_length(m) < len))
+	if (unlikely(mbuf_length(m) < len)) {
+		log_err_ratelimited("net: IP packet size does not match header: len %d, mbuf_length %d", len, mbuf_length(m));
 		goto drop;
+	}
 	if (len < mbuf_length(m))
 		mbuf_trim(m, mbuf_length(m) - len);
 
@@ -268,6 +311,7 @@ static void net_rx_one(struct mbuf *m)
 		break;
 
 	default:
+		log_err_ratelimited("net: unsupported IP protocol %d", iphdr->proto);
 		goto drop;
 	}
 
@@ -296,22 +340,23 @@ void net_rx_batch(struct mbuf **ms, unsigned int nr)
 
 static void iokernel_softirq_poll(struct kthread *k)
 {
-	struct rx_net_hdr *hdr;
+	struct tx_net_hdr *tx_hdr;
 	struct mbuf *m;
-	uint64_t cmd;
+	uint64_t cmd, rx_cmd;
+	uint32_t aux;
 	unsigned long payload;
 
 	while (true) {
 		if (!lrpc_recv(&k->rxq, &cmd, &payload))
 			break;
 
-		switch (cmd) {
+		rx_cmd = RX_GET_CMD(cmd);
+		aux = (uint32_t) RX_GET_AUX(cmd);
+		switch (rx_cmd) {
 		case RX_NET_RECV:
-			hdr = shmptr_to_ptr(&netcfg.rx_region,
-					    (shmptr_t)payload,
-					    MBUF_DEFAULT_LEN);
-			m = net_rx_alloc_mbuf(hdr);
+			m = net_rx_alloc_mbuf(aux, payload);
 			if (unlikely(!m)) {
+				log_warn_ratelimited("net: failed to alloc mbuf");
 				STAT(DROPS)++;
 				continue;
 			}
@@ -319,12 +364,24 @@ static void iokernel_softirq_poll(struct kthread *k)
 			break;
 
 		case RX_NET_COMPLETE:
-			mbuf_free((struct mbuf *)payload);
+			tx_hdr = shmptr_to_ptr(&netcfg.tx_region, (shmptr_t) payload,
+					       sizeof(*tx_hdr));
+			mbuf_free((struct mbuf *) tx_hdr->mbuf);
 			break;
 
 		case RX_REFILL_BUFS:
 			BUG_ON(!net_ops.trigger_rx_refill);
 			net_ops.trigger_rx_refill();
+			break;
+
+		case RX_UPDATE_MAC:
+			uint64_to_eth_addr(RX_UPDATE_MAC_GET_ETH_ADDR(payload), &k->mac);
+			k->pmyiok_index = RX_UPDATE_MAC_GET_PMYIOK_INDEX(payload);
+			log_info("net: updated MAC address to %02X:%02X:%02X:%02X:%02X:%02X",
+			         k->mac.addr[0], k->mac.addr[1], k->mac.addr[2],
+			         k->mac.addr[3], k->mac.addr[4], k->mac.addr[5]);
+			log_info("net: updated pmyiok index to %d", k->pmyiok_index);
+			arp_send_garp();
 			break;
 
 		default:
@@ -460,12 +517,20 @@ static int net_tx_iokernel(struct mbuf *m)
 	assert_preempt_disabled();
 
 	hdr = mbuf_push_hdr(m, *hdr);
-	hdr->completion_data = (unsigned long)m;
 	hdr->len = len;
 	hdr->olflags = m->txflags;
 	shmptr_t shm = ptr_to_shmptr(&netcfg.tx_region, hdr, len + sizeof(*hdr));
+	hdr->mbuf = (void *) m;
+#ifdef NO_CACHE_COHERENCE
+	batch_clwb(hdr, sizeof(*hdr) + len);
+	_mm_sfence();
+#endif
+	// IOK2IOK_TXPKT_MAKE_RAWCMD assumption
+	RT_BUG_ON(len >= (1u << 16u));
+	RT_BUG_ON(hdr->olflags >= (1u << 15u));
 
-	if (unlikely(!lrpc_send(&k->txpktq, TXPKT_NET_XMIT, shm))) {
+	if (unlikely(!lrpc_send(&k->txpktq, TXPKT_MAKE_CMD(TXPKT_NET_XMIT, k->pmyiok_index), shm))) {
+		log_warn_ratelimited("tx: failed to send to iokernel");
 		mbuf_pull_hdr(m, *hdr);
 		return -1;
 	}
@@ -518,7 +583,7 @@ void net_tx_eth(struct mbuf *m, uint16_t type, struct eth_addr dhost)
 	struct eth_hdr *eth_hdr;
 
 	eth_hdr = mbuf_push_hdr(m, *eth_hdr);
-	eth_hdr->shost = netcfg.mac;
+	eth_hdr->shost = myk()->mac;
 	eth_hdr->dhost = dhost;
 	eth_hdr->type = hton16(type);
 	net_tx_raw(m);
@@ -741,6 +806,8 @@ int net_init_thread(void)
 		return -ENOMEM;
 
 	k->iokernel_softirq = th;
+	memcpy(&k->mac, &netcfg.mac, sizeof(k->mac));
+	k->pmyiok_index = cfg_pmyiok_index;
 
 	tcache_init_perthread(mbuf_tcache, &perthread_get(mbuf_pt));
 

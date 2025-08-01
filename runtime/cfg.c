@@ -378,6 +378,153 @@ void cfg_register(struct cfg_handler *h)
 	nr_dyn_cfg_handlers++;
 }
 
+static int parse_cxl_path(const char *name, const char *val)
+{
+	rt_cxl_path = strdup(val);
+	return 0;
+}
+
+static int parse_iok_socket_index(const char *name, const char *val)
+{
+	iok_socket_index = atoi(val);
+	return 0;
+}
+
+static int parse_pmyiok_index(const char *name, const char *val)
+{
+	cfg_pmyiok_index = atoi(val);
+	return 0;
+}
+
+static int parse_bak_pmyiok_index(const char *name, const char *val)
+{
+	cfg_bak_pmyiok_index = atoi(val);
+	return 0;
+}
+
+#ifdef NO_SCHED
+void parse_list_str(char *list, bitmap_ptr_t bitmap) {
+	char *rest_list;
+	char *interval = strtok_r(list, ",", &rest_list);
+	while (interval != NULL) {
+		long start, end;
+		if (strstr(interval, "-") != NULL) {
+			char *rest_token;
+			char *token = strtok_r(interval, "-", &rest_token);
+			start = atol(token);
+			token = strtok_r(NULL, "-", &rest_token);
+			end = atol(token);
+		} else {
+			start = atol(interval);
+			end = start;
+		}
+		for (int i = start; i <= end; ++i)
+			bitmap_set(bitmap, i);
+		interval = strtok_r(NULL, ",", &rest_list);
+	}
+}
+
+static int parse_cores(const char *name, const char *val)
+{
+	char *list = strdup(val);
+	parse_list_str(list, rt_cores);
+	free(list);
+	return 0;
+}
+#endif
+
+static const struct cfg_handler cfg_early_handler[] = {
+	{ "runtime_cxl_path", parse_cxl_path, true },
+	{ "runtime_iok_socket_index", parse_iok_socket_index, false },
+	{ "runtime_pmyiok_index", parse_pmyiok_index, false },
+	{ "runtime_bak_pmyiok_index", parse_bak_pmyiok_index, false },
+#ifdef NO_SCHED
+	{ "runtime_cores", parse_cores, true },
+#endif
+};
+
+int cfg_early_load(const char *path)
+{
+	FILE *f;
+	char buf[BUFSIZ];
+	size_t handler_cnt = ARRAY_SIZE(cfg_early_handler);
+	DEFINE_BITMAP(parsed, handler_cnt);
+	char *name, *val;
+	int i, ret = 0, line = 0;
+	size_t len;
+	const struct cfg_handler *h;
+
+	bitmap_init(parsed, handler_cnt, 0);
+
+	log_info("early loading configuration from '%s'", path);
+
+	f = fopen(path, "r");
+	if (!f) {
+		log_err("Could not find configuation file %s (%s)", path, strerror(errno));
+		return -errno;
+	}
+
+	while (fgets(buf, sizeof(buf), f)) {
+		if (buf[0] == '#' || buf[0] == '\n') {
+			line++;
+			continue;
+		}
+		name = strtok(buf, " ");
+		if (!name)
+			break;
+		val = strtok(NULL, " ");
+
+		if (!val) {
+			log_err("config option with missing value on line %d", line);
+			ret = -EINVAL;
+			goto out;
+		}
+
+		len = strlen(val);
+		if (val[len - 1] == '\n')
+			val[len - 1] = '\0';
+
+		for (i = 0; i < handler_cnt; i++) {
+			h = &cfg_early_handler[i];
+			if (!strncmp(name, h->name, BUFSIZ)) {
+				ret = h->fn(name, val);
+				if (ret) {
+					log_err("bad config option on line %d",
+						line);
+					goto out;
+				}
+				bitmap_set(parsed, i);
+				break;
+			}
+		}
+		line++;
+	}
+
+	for (i = 0; i < handler_cnt; i++) {
+		h = &cfg_early_handler[i];
+		if (h->required && !bitmap_test(parsed, i)) {
+			log_err("missing required config option '%s'", h->name);
+			ret = -EINVAL;
+			goto out;
+		}
+	}
+
+	/* log some relevant config parameters */
+	log_info("early_cfg: cxl path: %s", rt_cxl_path);
+	log_info("early_cfg: iok socket index: %d", iok_socket_index);
+	log_info("early_cfg: pmyiok index: %d", cfg_pmyiok_index);
+	log_info("early_cfg: bak pmyiok index: %d", cfg_bak_pmyiok_index);
+#ifdef NO_SCHED
+	bitmap_for_each_set(rt_cores, NCPU, i) {
+		log_info("early_cfg: core %d", i);
+	}
+#endif
+
+out:
+	fclose(f);
+	return ret;
+}
+
 static const struct cfg_handler cfg_handlers[] = {
 	{ "host_addr", parse_host_ip, true },
 	{ "host_netmask", parse_host_ip, true },
@@ -471,9 +618,17 @@ int cfg_load(const char *path)
 		}
 
 		if (i == handler_cnt) {
-			log_warn("unrecognized config option on line %d", line);
-			ret = -EINVAL;
-			goto out;
+			for (i = 0; i < ARRAY_SIZE(cfg_early_handler); ++i) {
+				h = &cfg_early_handler[i];
+				if (!strncmp(name, h->name, BUFSIZ)) {
+					break;
+				}
+			}
+			if (i == ARRAY_SIZE(cfg_early_handler)) {
+				log_warn("unrecognized config option on line %d", line);
+				ret = -EINVAL;
+				goto out;
+			}
 		}
 
 		line++;
@@ -518,6 +673,12 @@ int cfg_load(const char *path)
 #endif
 		 cfg_directpath_enabled() ? "enabled" : "disabled",
 		 cfg_transparent_hugepages_enabled ? "enabled" : "disabled");
+
+#ifdef NO_SCHED
+	RT_BUG_ON(bitmap_popcount(rt_cores, NCPU) != spinks);
+	RT_BUG_ON(bitmap_popcount(rt_cores, NCPU) != guaranteedks);
+	RT_BUG_ON(bitmap_popcount(rt_cores, NCPU) != maxks);
+#endif
 
 out:
 	fclose(f);

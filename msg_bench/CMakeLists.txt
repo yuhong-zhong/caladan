@@ -1,0 +1,20 @@
+cmake_minimum_required(VERSION 3.10)
+project(msg_bench)
+
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_BUILD_TYPE RelWithDebInfo)
+
+include_directories(/usr/local/include)
+
+add_compile_options(-mwaitpkg)
+add_compile_options(-march=native)
+add_compile_options(-mavx512f)
+
+add_executable(msg_bench msg_bench.cpp)
+add_executable(mh_msg_bench mh_msg_bench.cpp)
+add_executable(rt_mpi_cxl rt_mpi_cxl.cpp)
+
+add_executable(wipe_cxl wipe_cxl.cpp)
+add_executable(mpi_cxl mpi_cxl.cpp)
+
+target_link_libraries(msg_bench numa)

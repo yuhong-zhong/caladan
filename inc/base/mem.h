@@ -5,6 +5,7 @@
 #pragma once
 
 #include <base/types.h>
+#include <x86intrin.h>
 
 enum {
 	PGSHIFT_4KB = 12,
@@ -56,6 +57,35 @@ extern int mem_unmap_shm(void *base);
 extern int mem_lookup_page_phys_addrs(void *addr, size_t len, size_t pgsize,
 				      physaddr_t *maddrs);
 extern void touch_mapping(void *base, size_t len, size_t pgsize);
+
+#define ROUND_DOWN(a, b) ((a) / (b) * (b))
+#define ROUND_UP(a, b) (((a) + (b) - 1) / (b) * (b))
+
+#define clflushopt(addr) asm volatile("clflushopt %0" : "+m" (*(volatile char *)(addr)))
+#define clwb(addr) asm volatile("clwb %0" : "+m" (*(volatile char *)(addr)))
+#define pause() asm volatile("pause")
+
+#define batch_clflushopt(addr, len)												\
+	do {															\
+		const void *_addr = (addr);											\
+		const uint64_t _len = (len);											\
+		uint8_t *_ptr = (uint8_t *)(ROUND_DOWN((uint64_t)(_addr), CACHE_LINE_SIZE));					\
+		uint64_t _num_lines = ((((uint64_t)(_addr)) - ((uint64_t)_ptr)) + _len + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE; \
+		for (uint64_t _i = 0; _i < _num_lines; ++_i) {									\
+			asm volatile("clflushopt %0" : "+m" (*(volatile char *)(_ptr + _i * CACHE_LINE_SIZE)));			\
+		}														\
+	} while (0)
+
+#define batch_clwb(addr, len)													\
+	do {															\
+		const void *_addr = (addr);											\
+		const uint64_t _len = (len);											\
+		uint8_t *_ptr = (uint8_t *)(ROUND_DOWN((uint64_t)(_addr), CACHE_LINE_SIZE));					\
+		uint64_t _num_lines = ((((uint64_t)(_addr)) - ((uint64_t)_ptr)) + _len + CACHE_LINE_SIZE - 1) / CACHE_LINE_SIZE; \
+		for (uint64_t _i = 0; _i < _num_lines; ++_i) {									\
+			asm volatile("clwb %0" : "+m" (*(volatile char *)(_ptr + _i * CACHE_LINE_SIZE)));			\
+		}														\
+	} while (0)
 
 static inline int
 mem_lookup_page_phys_addr(void *addr, size_t pgsize, physaddr_t *paddr)

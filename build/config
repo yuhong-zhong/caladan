@@ -9,8 +9,12 @@ CONFIG_SPDK=n
 # Enable debug build mode (slower but enables several runtime checks)
 CONFIG_DEBUG=n
 # Enable additional compiler optimizations (may reduce compatibility)
-CONFIG_OPTIMIZE=y
+CONFIG_OPTIMIZE=n
 # Allow runtimes to access Mellanox ConnectX-5 NICs directly (kernel bypass)
-CONFIG_DIRECTPATH=y
+CONFIG_DIRECTPATH=n
 # Build with clang instead of gcc
 CONFIG_CLANG=n
+# Assume no cache coherency in shared memory
+CONFIG_NO_CACHE_COHERENCE=y
+# Disable scheduler
+CONFIG_NO_SCHED=n
